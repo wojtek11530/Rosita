@@ -1,4 +1,22 @@
 {
+  "multiemo": {
+  "teacher_model": "../models/bert_student/multiemo",
+  "student_model": "../models/bert_student/multiemo",
+  "data_dir": "../data/multiemo2",
+  "output_dir": "../models/bert-8layer/iter_depth_prun/multiemo",
+  "lr_schedule": "none",
+  "eval_step": 500,
+  "learning_rate": 1e-05,
+  "prun_period_proportion": 0.2,
+  "keep_heads": 12,
+  "keep_layers": 8,
+  "emb_hidden_dim": -1,
+  "ffn_hidden_dim": 3072,
+  "depth_or_width": "depth",
+  "repr_distill": false,
+  "pred_distill": true,
+  "num_train_epochs": 3
+ },
  "cola": {
   "teacher_model": "../models/bert_student/CoLA",
   "student_model": "../models/bert_student/CoLA",

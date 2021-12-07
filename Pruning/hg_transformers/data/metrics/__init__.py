@@ -13,10 +13,11 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import numpy as np
 
 try:
     from scipy.stats import pearsonr, spearmanr
-    from sklearn.metrics import matthews_corrcoef, f1_score
+    from sklearn.metrics import matthews_corrcoef, f1_score, accuracy_score
 
     _has_sklearn = True
 except (AttributeError, ImportError):
@@ -35,6 +36,16 @@ if _has_sklearn:
     def acc_and_f1(preds, labels):
         acc = simple_accuracy(preds, labels)
         f1 = f1_score(y_true=labels, y_pred=preds)
+        return {
+            "acc": acc,
+            "f1": f1,
+            "acc_and_f1": (acc + f1) / 2,
+        }
+
+
+    def multiclass_acc_and_f1(preds, labels):
+        acc = accuracy_score(y_true=labels, y_pred=preds)
+        f1 = f1_score(y_true=labels, y_pred=preds, average='macro')
         return {
             "acc": acc,
             "f1": f1,
@@ -81,5 +92,13 @@ if _has_sklearn:
         assert len(preds) == len(labels)
         if task_name == "xnli":
             return {"acc": simple_accuracy(preds, labels)}
+        else:
+            raise KeyError(task_name)
+
+    def multiemo_compute_metrics(task_name, logits, labels):
+        preds = np.argmax(logits, axis=1)
+        assert len(preds) == len(labels)
+        if 'multiemo' in task_name:
+            return multiclass_acc_and_f1(preds, labels)
         else:
             raise KeyError(task_name)
