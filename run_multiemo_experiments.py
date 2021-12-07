@@ -35,8 +35,9 @@ def main():
         run_process(cmd)
         logger.info("Downloading finished")
 
+    os.chdir(os.path.join(PROJECT_FOLDER, 'Pruning'))
     if not os.path.exists(os.path.join(MODEL_FOLDER, 'bert_ft', 'multiemo_en_all_sentence')):
-        cmd = 'python3 -m Pruning.multiemo_fine_tune_bert '
+        cmd = 'python3 -m multiemo_fine_tune_bert '
         options = [
             '--pretrained_model', 'data/models/bert_pt',
             '--data_dir', 'data/multiemo2',
@@ -52,10 +53,11 @@ def main():
         logger.info("Fine tuning bert-base-uncased on multiemo_en_all_sentence")
         run_process(cmd)
 
+    os.chdir(os.path.join(PROJECT_FOLDER, 'KD'))
     if not os.path.exists(os.path.join(MODEL_FOLDER, 'bert_student', 'multiemo_en_all_sentence')):
-        cmd = 'python3 -m KD.train '
+        cmd = 'python3 -m train '
         options = [
-            '--config_dir', 'KD/configurations/config_bert-student.json',
+            '--config_dir', 'configurations/config_bert-student.json',
             '--task_name', 'multiemo_en_all_sentence',
             '--do_lower_case'
         ]
@@ -66,7 +68,7 @@ def main():
     if not os.path.exists(os.path.join(MODEL_FOLDER, 'bert-8layer', 'iter_depth_prun', 'multiemo_en_all_sentence')):
         cmd = 'python3 KD/train.py '
         options = [
-            '--config_dir', 'KD/configurations/config_bert-8layer.json',
+            '--config_dir', 'configurations/config_bert-8layer.json',
             '--task_name', 'multiemo_en_all_sentence',
             '--do_lower_case'
         ]
@@ -77,7 +79,7 @@ def main():
     if not os.path.exists(os.path.join(MODEL_FOLDER, 'setting4', 'multiemo_en_all_sentence')):
         cmd = 'python3 -m KD.train '
         options = [
-            '--config_dir', 'KD/configurations/config_setting4.json',
+            '--config_dir', 'configurations/config_setting4.json',
             '--task_name', 'multiemo_en_all_sentence',
             '--do_lower_case'
         ]
@@ -85,12 +87,12 @@ def main():
         logger.info("Iterative width pruning of BERT_8 on multiemo_en_all_sentence")
         run_process(cmd)
 
-    cmd = 'python3 -m KD.test '
+    cmd = 'python3 -m test '
     options = [
         '--task_name', 'multiemo_en_all_sentence',
-        '--data_dir', 'data/multiemo2',
-        '--student_model', 'models/setting4/multiemo_en_all_sentence',
-        '--output_dir', 'models/setting4/multiemo_en_all_sentence',
+        '--data_dir', '../data/multiemo2',
+        '--student_model', '../models/setting4/multiemo_en_all_sentence',
+        '--output_dir', '../models/setting4/multiemo_en_all_sentence',
         '--do_eval',
         '--do_predict'
     ]

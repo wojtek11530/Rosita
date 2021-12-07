@@ -24,17 +24,15 @@ import logging
 import os
 import random
 import sys
-import json
 import time
 from datetime import timedelta
 from typing import List
 
 import numpy as np
 import torch
-import torch.nn.functional as F
-from torch.utils.data import (DataLoader, RandomSampler, SequentialSampler,
+from torch.utils.data import (DataLoader, SequentialSampler,
                               TensorDataset)
-from tqdm import tqdm, trange
+from tqdm import tqdm
 
 from torch.nn import CrossEntropyLoss, MSELoss
 from scipy.stats import pearsonr, spearmanr
@@ -42,8 +40,6 @@ from sklearn.metrics import matthews_corrcoef, f1_score, accuracy_score, classif
 
 from transformer.modeling_prun import TinyBertForSequenceClassification as PrunBertForSequenceClassification
 from transformer.tokenization import BertTokenizer
-from transformer.optimization import BertAdam
-from transformer.file_utils import WEIGHTS_NAME, CONFIG_NAME
 from utils import result_to_text_file, dictionary_to_json
 
 csv.field_size_limit(sys.maxsize)
