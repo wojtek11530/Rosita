@@ -1,9 +1,9 @@
 {
  "multiemo": {
-  "teacher_model": "../models/bert_ft/multiemo",
+  "teacher_model": "../models/bert_ft",
   "student_model": "../models/bert_pt",
   "data_dir": "../data/multiemo2",
-  "output_dir": "../models/bert_student/multiemo",
+  "output_dir": "../models/bert_student",
   "lr_schedule": "warmup_linear",
   "warmup_proportion": 0.1,
   "eval_step": 100,

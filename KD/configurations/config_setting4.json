@@ -1,9 +1,9 @@
 {
   "multiemo": {
-  "teacher_model": "../models/bert-8layer/iter_depth_prun/multiemo",
-  "student_model": "../models/bert-8layer/iter_depth_prun/multiemo",
-  "data_dir": "../data/multiemo",
-  "output_dir": "../models/setting4/multiemo",
+  "teacher_model": "../models/bert-8layer/iter_depth_prun",
+  "student_model": "../models/bert-8layer/iter_depth_prun",
+  "data_dir": "../data/multiemo2",
+  "output_dir": "../models/setting4",
   "lr_schedule": "none",
   "warmup_proportion": 0.0,
   "eval_step": 500,

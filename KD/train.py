@@ -19,6 +19,10 @@
 from __future__ import absolute_import, division, print_function
 
 import argparse, csv, logging, os, random, sys, json, torch
+import time
+from datetime import timedelta
+from typing import List
+
 import numpy as np
 from torch.utils.data import (DataLoader, RandomSampler, SequentialSampler,
                               TensorDataset)
@@ -26,13 +30,14 @@ from tqdm import tqdm, trange
 
 from torch.nn import CrossEntropyLoss, MSELoss
 from scipy.stats import pearsonr, spearmanr
-from sklearn.metrics import matthews_corrcoef, f1_score
+from sklearn.metrics import matthews_corrcoef, f1_score, accuracy_score
 
 from transformer.modeling import TinyBertForSequenceClassification
 from transformer.modeling_prun import TinyBertForSequenceClassification as PrunTinyBertForSequenceClassification
 from transformer.tokenization import BertTokenizer
 from transformer.optimization import BertAdam
 from transformer.file_utils import WEIGHTS_NAME, CONFIG_NAME
+from utils import result_to_text_file, dictionary_to_json
 
 csv.field_size_limit(sys.maxsize)
 
@@ -46,9 +51,12 @@ logger = logging.getLogger()
 
 try:
     from tensorboardX import SummaryWriter
+
     _has_tensorboard = True
 except ImportError:
     _has_tensorboard = False
+
+
 def is_tensorboard_available():
     return _has_tensorboard
 
@@ -96,6 +104,10 @@ class DataProcessor(object):
         """Gets a collection of `InputExample`s for the dev set."""
         raise NotImplementedError()
 
+    def get_test_examples(self, data_dir):
+        """Gets a collection of `InputExample`s for the test set."""
+        raise NotImplementedError()
+
     def get_labels(self):
         """Gets the list of labels for this data set."""
         raise NotImplementedError()
@@ -111,6 +123,13 @@ class DataProcessor(object):
                     line = list(unicode(cell, 'utf-8') for cell in line)
                 lines.append(line)
             return lines
+
+    @classmethod
+    def _read_txt(cls, input_file: str) -> List[str]:
+        """Reads a tab separated value file."""
+        with open(input_file, "r", encoding='UTF-8') as f:
+            lines = f.read().splitlines()
+        return lines
 
 
 class MrpcProcessor(DataProcessor):
@@ -444,6 +463,54 @@ class WnliProcessor(DataProcessor):
         return examples
 
 
+class MultiemoProcessor(DataProcessor):
+    """Processor for the Multiemo set"""
+
+    def __init__(self, lang: str, domain: str, kind: str):
+        super(MultiemoProcessor, self).__init__()
+        self.lang = lang.lower()
+        self.domain = domain.lower()
+        self.kind = kind.lower()
+
+    def get_train_examples(self, data_dir: str) -> List[InputExample]:
+        """See base class."""
+        file_path = self.get_set_type_path(data_dir, 'train')
+        logger.info(f"LOOKING AT {file_path}")
+        return self._create_examples(self._read_txt(file_path), "train")
+
+    def get_dev_examples(self, data_dir: str) -> List[InputExample]:
+        """See base class."""
+        file_path = self.get_set_type_path(data_dir, 'dev')
+        return self._create_examples(self._read_txt(file_path), "dev")
+
+    def get_test_examples(self, data_dir: str) -> List[InputExample]:
+        """See base class."""
+        file_path = self.get_set_type_path(data_dir, 'test')
+        return self._create_examples(self._read_txt(file_path), "test")
+
+    def get_set_type_path(self, data_dir: str, set_type: str) -> str:
+        return os.path.join(data_dir, self.domain + '.' + self.kind + '.' + set_type + '.' + self.lang + '.txt')
+
+    def get_labels(self) -> List[str]:
+        """See base class."""
+        if self.kind == 'text':
+            return ["meta_amb", "meta_minus_m", "meta_plus_m", "meta_zero"]
+        else:
+            return ["z_amb", "z_minus_m", "z_plus_m", "z_zero"]
+
+    @staticmethod
+    def _create_examples(lines: List[str], set_type: str) -> List[InputExample]:
+        examples = []
+        for (i, line) in enumerate(lines):
+            guid = "%s-%s" % (set_type, i)
+            split_line = line.split('__label__')
+            text_a = split_line[0]
+            label = split_line[1]
+            examples.append(
+                InputExample(guid=guid, text_a=text_a, text_b=None, label=label))
+        return examples
+
+
 def convert_examples_to_features(examples, label_list, max_seq_length,
                                  tokenizer, output_mode):
     """Loads a data file into a list of `InputBatch`s."""
@@ -549,9 +616,30 @@ def pearson_and_spearman(preds, labels):
     }
 
 
+def multiclass_acc_and_f1(preds, labels):
+    acc = accuracy_score(y_true=labels, y_pred=preds)
+    f1 = f1_score(y_true=labels, y_pred=preds, average='macro')
+    return {
+        "acc": acc,
+        "f1": f1,
+        "acc_and_f1": (acc + f1) / 2,
+    }
+
+
+def multiemo_compute_metrics(task_name, logits, labels):
+    preds = np.argmax(logits, axis=1)
+    assert len(preds) == len(labels)
+    if 'multiemo' in task_name:
+        return multiclass_acc_and_f1(preds, labels)
+    else:
+        raise KeyError(task_name)
+
+
 def compute_metrics(task_name, preds, labels):
     assert len(preds) == len(labels)
-    if task_name == "cola":
+    if 'multiemo' in task_name:
+        return multiclass_acc_and_f1(preds, labels)
+    elif task_name == "cola":
         return {"mcc": matthews_corrcoef(labels, preds)}
     elif task_name == "sst-2":
         return {"acc": simple_accuracy(preds, labels)}
@@ -603,7 +691,8 @@ def do_eval(model, task_name, eval_dataloader,
             device, output_mode, eval_labels, num_labels):
     eval_loss = 0
     nb_eval_steps = 0
-    preds = []
+    all_logits = None
+
     for batch_ in tqdm(eval_dataloader, desc="Evaluating"):
         batch_ = tuple(t.to(device) for t in batch_)
         with torch.no_grad():
@@ -618,40 +707,43 @@ def do_eval(model, task_name, eval_dataloader,
         elif output_mode == "regression":
             loss_fct = MSELoss()
             tmp_eval_loss = loss_fct(logits.view(-1), label_ids.view(-1))
+        else:
+            raise ValueError('Not known output model')
 
         eval_loss += tmp_eval_loss.mean().item()
         nb_eval_steps += 1
-        if len(preds) == 0:
-            preds.append(logits.detach().cpu().numpy())
+
+        if all_logits is None:
+            all_logits = logits.detach().cpu().numpy()
         else:
-            preds[0] = np.append(
-                preds[0], logits.detach().cpu().numpy(), axis=0)
+            all_logits = np.append(all_logits, logits.detach().cpu().numpy(), axis=0)
 
     eval_loss = eval_loss / nb_eval_steps
 
-    preds = preds[0]
     if output_mode == "classification":
-        preds = np.argmax(preds, axis=1)
+        preds = np.argmax(all_logits, axis=1)
     elif output_mode == "regression":
-        preds = np.squeeze(preds)
+        preds = np.squeeze(all_logits)
+    else:
+        raise ValueError('Not known output model')
+
     result = compute_metrics(task_name, preds, eval_labels.numpy())
     result['eval_loss'] = eval_loss
-    return result
-
+    return result, all_logits
 
 
 def pruning(model, optimizer, model_path, keep_layers, keep_heads, ffn_hidden_dim, emb_hidden_dim, \
-        num_labels, prun_step, device, task, schedule, next_lr, next_t_total):
+            num_labels, prun_step, device, task, schedule, next_lr, next_t_total):
     score = optimizer.get_taylor(prun_step)
     score_dict = {}
     modules2prune = []
     for i in range(12):
-        modules2prune += ['encoder.layer.%d.attention.self.query.weight'%i,
-                         'encoder.layer.%d.attention.self.key.weight'%i,
-                         'encoder.layer.%d.attention.self.value.weight'%i,
-                         'encoder.layer.%d.attention.output.dense.weight'%i,
-                         'encoder.layer.%d.intermediate.dense.weight'%i,
-                         'encoder.layer.%d.output.dense.weight'%i]
+        modules2prune += ['encoder.layer.%d.attention.self.query.weight' % i,
+                          'encoder.layer.%d.attention.self.key.weight' % i,
+                          'encoder.layer.%d.attention.self.value.weight' % i,
+                          'encoder.layer.%d.attention.output.dense.weight' % i,
+                          'encoder.layer.%d.intermediate.dense.weight' % i,
+                          'encoder.layer.%d.output.dense.weight' % i]
     for name, param in list(model.bert.named_parameters()):
         if name in modules2prune:
             cur_score = score[param]
@@ -667,7 +759,7 @@ def pruning(model, optimizer, model_path, keep_layers, keep_heads, ffn_hidden_di
                                     -ffn_hidden_dim %d\
                                     -emb_hidden_dim %d\
                                     -task %s\
-                                    "%(model_path, keep_heads, keep_layers, ffn_hidden_dim, emb_hidden_dim, task)
+                                    " % (model_path, keep_heads, keep_layers, ffn_hidden_dim, emb_hidden_dim, task)
     os.system(prun_command)
     model = PrunTinyBertForSequenceClassification.from_pretrained(output_dir, num_labels=num_labels)
     model.to(device)
@@ -678,25 +770,23 @@ def pruning(model, optimizer, model_path, keep_layers, keep_heads, ffn_hidden_di
         {'params': [p for n, p in param_optimizer if any(nd in n for nd in no_decay)], 'weight_decay': 0.0}
     ]
     optimizer = BertAdam(optimizer_grouped_parameters,
-                             schedule=schedule,
-                             lr=next_lr,
-                             warmup=0.,
-                             t_total=next_t_total,
-                             device=device)
+                         schedule=schedule,
+                         lr=next_lr,
+                         warmup=0.,
+                         t_total=next_t_total,
+                         device=device)
     return model, optimizer
 
 
-
 def iterative_pruning(args, student_model, teacher_model, optimizer, tokenizer,
-                        num_train_optimization_steps, prun_step, max_prun_times,
-                        prun_times, num_labels, device):
-
+                      num_train_optimization_steps, prun_step, max_prun_times,
+                      prun_times, num_labels, device):
     model_to_save = student_model.module if hasattr(student_model, 'module') else student_model
     model_name = WEIGHTS_NAME
     output_dir = os.path.join(args.output_dir)
     if not os.path.exists(output_dir):
         os.makedirs(output_dir)
-    output_model_file = os.path.join(output_dir,  model_name)
+    output_model_file = os.path.join(output_dir, model_name)
     output_config_file = os.path.join(output_dir, CONFIG_NAME)
     torch.save(model_to_save.state_dict(), output_model_file)
     model_to_save.config.to_json_file(output_config_file)
@@ -704,60 +794,64 @@ def iterative_pruning(args, student_model, teacher_model, optimizer, tokenizer,
 
     if args.depth_or_width == 'width':
         keep_heads, ffn_hidden_dim, emb_hidden_dim = pruning_schedule(prun_times, max_prun_times,
-            teacher_model.config.num_attention_heads, teacher_model.config.prun_intermediate_size,
-            teacher_model.config.hidden_size,
-            args.ffn_hidden_dim, args.emb_hidden_dim)
+                                                                      teacher_model.config.num_attention_heads,
+                                                                      teacher_model.config.prun_intermediate_size,
+                                                                      teacher_model.config.hidden_size,
+                                                                      args.ffn_hidden_dim, args.emb_hidden_dim)
         keep_layers = student_model.config.num_hidden_layers
     elif args.depth_or_width == 'depth':
         keep_heads, ffn_hidden_dim, emb_hidden_dim = args.keep_heads, args.ffn_hidden_dim, args.emb_hidden_dim
-        keep_layers = teacher_model.config.num_hidden_layers-prun_times
+        keep_layers = teacher_model.config.num_hidden_layers - prun_times
 
-    next_t_total = num_train_optimization_steps-prun_times*prun_step
-    if args.lr_schedule=='none':
+    next_t_total = num_train_optimization_steps - prun_times * prun_step
+    if args.lr_schedule == 'none':
         next_lr = args.learning_rate
-    elif args.lr_schedule=='warmup_linear':
+    elif args.lr_schedule == 'warmup_linear':
         next_lr = optimizer.param_groups[0]['lr'] * optimizer.param_groups[0]['schedule'].get_lr(prun_step)
-    student_model, optimizer = pruning(student_model, optimizer, args.output_dir, 
-                        keep_layers, keep_heads, ffn_hidden_dim, emb_hidden_dim, num_labels, 
-                        prun_step, device, args.task_name, args.lr_schedule, next_lr, next_t_total)
+
+    student_model, optimizer = pruning(student_model, optimizer, args.output_dir,
+                                       keep_layers, keep_heads, ffn_hidden_dim, emb_hidden_dim, num_labels,
+                                       prun_step, device, args.task_name, args.lr_schedule, next_lr, next_t_total)
     return student_model, optimizer
 
 
-
 def pruning_schedule(prun_times, max_prun_times,
-        orig_heads, orig_ffn_dim, orig_emb_dim,
-        final_ffn_dim, final_emb_dim):
+                     orig_heads, orig_ffn_dim, orig_emb_dim,
+                     final_ffn_dim, final_emb_dim):
     keep_heads = orig_heads - prun_times
-    ffn_hidden_dim = orig_ffn_dim - (orig_ffn_dim-final_ffn_dim)*(prun_times/max_prun_times)
-    emb_hidden_dim = orig_emb_dim - (orig_emb_dim-final_emb_dim)*(prun_times/max_prun_times)
-    if final_emb_dim==-1:
+    ffn_hidden_dim = orig_ffn_dim - (orig_ffn_dim - final_ffn_dim) * (prun_times / max_prun_times)
+    emb_hidden_dim = orig_emb_dim - (orig_emb_dim - final_emb_dim) * (prun_times / max_prun_times)
+    if final_emb_dim == -1:
         emb_hidden_dim = -1
     return keep_heads, ffn_hidden_dim, emb_hidden_dim
 
 
-
 def init_prun(args, tlayer_num, tatt_heads, num_train_examples):
-    if args.depth_or_width=='depth':
+    if args.depth_or_width == 'depth':
         max_prun_times, prun_times = tlayer_num - args.keep_layers, 0
-    elif args.depth_or_width=='width':
+    elif args.depth_or_width == 'width':
         max_prun_times, prun_times = tatt_heads - args.keep_heads, 0
     prun_freq = args.prun_period_proportion * args.num_train_epochs / max_prun_times
-    prun_step = int(prun_freq * num_train_examples/args.train_batch_size/args.gradient_accumulation_steps)
+    prun_step = int(prun_freq * num_train_examples / args.train_batch_size / args.gradient_accumulation_steps)
     return max_prun_times, prun_times, prun_freq, prun_step
 
 
-
 def build_dataloader(set_type, args, processor, label_list, tokenizer, output_mode):
-    if set_type=='train' and args.aug_train:
+    if set_type == 'train' and args.aug_train:
         examples = processor.get_aug_examples(args.data_dir)
-    elif set_type=='train':
+    elif set_type == 'train':
         examples = processor.get_train_examples(args.data_dir)
-    elif set_type=='eval':
+    elif set_type == 'eval':
         examples = processor.get_dev_examples(args.data_dir)
+    elif set_type == 'test':
+        examples = processor.get_test_examples(args.data_dir)
+    else:
+        raise ValueError('Not known set type')
+
     features = convert_examples_to_features(examples, label_list, args.max_seq_length, tokenizer, output_mode)
     data, labels = get_tensor_data(output_mode, features)
-    sampler = SequentialSampler(data) if set_type=='eval' else RandomSampler(data)
-    batch_size = args.eval_batch_size if set_type=='eval' else args.train_batch_size
+    sampler = SequentialSampler(data) if set_type in ['eval', 'test'] else RandomSampler(data)
+    batch_size = args.eval_batch_size if set_type in ['eval', 'test'] else args.train_batch_size
     dataloader = DataLoader(data, sampler=sampler, batch_size=batch_size)
     return dataloader, labels, data
 
@@ -921,17 +1015,19 @@ def main():
 
     # intermediate distillation default parameters
     default_params = {
-            "cola": {"max_seq_length": 64, 'train_batch_size': 32},
-            "mnli": {"max_seq_length": 128, 'train_batch_size': 64},
-            "mrpc": {"max_seq_length": 128, 'train_batch_size': 32},
-            "sst-2": {"max_seq_length": 64, 'train_batch_size': 32},
-            "sts-b": {"max_seq_length": 128, 'train_batch_size': 32},
-            "qqp": {"max_seq_length": 128, 'train_batch_size': 64},
-            "qnli": {"max_seq_length": 128, 'train_batch_size': 64},
-            "rte": {"max_seq_length": 128, 'train_batch_size': 32}
+        "multiemo": {"max_seq_length": 128, "train_batch_size": 16},
+        "cola": {"max_seq_length": 64, 'train_batch_size': 32},
+        "mnli": {"max_seq_length": 128, 'train_batch_size': 64},
+        "mrpc": {"max_seq_length": 128, 'train_batch_size': 32},
+        "sst-2": {"max_seq_length": 64, 'train_batch_size': 32},
+        "sts-b": {"max_seq_length": 128, 'train_batch_size': 32},
+        "qqp": {"max_seq_length": 128, 'train_batch_size': 64},
+        "qnli": {"max_seq_length": 128, 'train_batch_size': 64},
+        "rte": {"max_seq_length": 128, 'train_batch_size': 32}
+
     }
 
-    acc_tasks = ["mnli", "mrpc", "sst-2", "qqp", "qnli", "rte"]
+    acc_tasks = ["mnli", "mrpc", "sst-2", "qqp", "qnli", "rte", "multiemo"]
     corr_tasks = ["sts-b"]
     mcc_tasks = ["cola"]
 
@@ -957,33 +1053,53 @@ def main():
         config_file = open(args.config_dir, 'r')
         config = json.load(config_file)
         config_file.close()
-        for key in config[task_name]:
-            vars(args)[key] = config[task_name][key]
-        args.logging_dir = os.path.join(args.output_dir, 'logging')
+
+        if 'multiemo' in task_name:
+            config_task_key = 'multiemo'
+        else:
+            config_task_key = task_name
+
+        for key in config[config_task_key]:
+            vars(args)[key] = config[config_task_key][key]
+
+    # prepare dirs for multiemo
+    if 'multiemo' in task_name:
+        args.output_dir = os.path.join(args.output_dir, task_name)
+        args.teacher_model = os.path.join(args.teacher_model, task_name)
+        if 'bert_pt' not in args.student_model:
+            args.student_model = os.path.join(args.student_model, task_name)
 
     # Prepare task settings
     if os.path.exists(args.output_dir) and os.listdir(args.output_dir):
         raise ValueError("Output directory ({}) already exists and is not empty.".format(args.output_dir))
     if not os.path.exists(args.output_dir):
         os.makedirs(args.output_dir)
-    if 'logging_dir' in args:
-        if not os.path.exists(args.logging_dir):
-            if is_tensorboard_available():
-                tb_writer = SummaryWriter(log_dir=args.logging_dir)
 
     if task_name in default_params:
         args.max_seq_length = default_params[task_name]["max_seq_length"]
         args.train_batch_size = default_params[task_name]["train_batch_size"]
+    elif 'multiemo' in task_name:
+        args.max_seq_length = default_params['multiemo']["max_seq_length"]
+        args.train_batch_size = default_params['multiemo']["train_batch_size"]
 
     fw_args = open(args.output_dir + '/args.txt', 'w')
     fw_args.write(str(args))
     fw_args.close()
 
-    if task_name not in processors:
+    if task_name not in processors or 'multiemo' in task_name:
         raise ValueError("Task not found: %s" % task_name)
 
-    processor = processors[task_name]()
-    output_mode = output_modes[task_name]
+    if 'multiemo' in task_name:
+        _, lang, domain, kind = task_name.split('_')
+        processor = MultiemoProcessor(lang, domain, kind)
+    else:
+        processor = processors[task_name]()
+
+    if 'multiemo' in task_name:
+        output_mode = 'classification'
+    else:
+        output_mode = output_modes[task_name]
+
     label_list = processor.get_labels()
     num_labels = len(label_list)
     tokenizer = BertTokenizer.from_pretrained(args.student_model, do_lower_case=args.do_lower_case)
@@ -1002,40 +1118,49 @@ def main():
             train_sampler = RandomSampler(train_data)
             train_dataloader = DataLoader(train_data, sampler=train_sampler, batch_size=args.train_batch_size)
         except FileNotFoundError:
-            train_dataloader, _, train_data = build_dataloader('train', args, processor, label_list, tokenizer, output_mode)
+            train_dataloader, _, train_data = build_dataloader('train', args, processor, label_list, tokenizer,
+                                                               output_mode)
             if args.aug_train:
                 torch.save(train_data, os.path.join(args.data_dir, 'train_aug.pt'))
             else:
                 torch.save(train_data, os.path.join(args.data_dir, 'train.pt'))
+
         num_train_optimization_steps = int(
             len(train_data) / args.train_batch_size / args.gradient_accumulation_steps) * args.num_train_epochs
-    eval_dataloader, eval_labels, eval_data = build_dataloader('eval', args, processor, label_list, tokenizer, output_mode)
+
+    eval_dataloader, eval_labels, eval_data = build_dataloader('eval', args, processor, label_list, tokenizer,
+                                                               output_mode)
 
     if not args.do_eval:
         teacher_model = TinyBertForSequenceClassification.from_pretrained(args.teacher_model, num_labels=num_labels)
         teacher_model.to(device)
+
     student_model = PrunTinyBertForSequenceClassification.from_pretrained(args.student_model, num_labels=num_labels)
     student_model.to(device)
-    
+
     if args.do_eval:
         logger.info("***** Running evaluation *****")
         logger.info("  Num examples = %d", len(eval_data))
         logger.info("  Batch size = %d", args.eval_batch_size)
 
         student_model.eval()
-        result = do_eval(student_model, task_name, eval_dataloader,
-                         device, output_mode, eval_labels, num_labels)
+        result, _ = do_eval(student_model, task_name, eval_dataloader,
+                            device, output_mode, eval_labels, num_labels)
         logger.info("***** Eval results *****")
         for key in sorted(result.keys()):
             logger.info("  %s = %s", key, str(result[key]))
     else:
+        training_start_time = time.monotonic()
+
         logger.info("***** Running training *****")
         logger.info("  Num examples = %d", len(train_data))
         logger.info("  Batch size = %d", args.train_batch_size)
         logger.info("  Num steps = %d", num_train_optimization_steps)
+
         if n_gpu > 1:
             student_model = torch.nn.DataParallel(student_model)
             teacher_model = torch.nn.DataParallel(teacher_model)
+
         # Prepare optimizer
         param_optimizer = list(student_model.named_parameters())
         size = 0
@@ -1057,6 +1182,7 @@ def main():
                              device=device)
         # Prepare loss functions
         loss_mse = MSELoss()
+
         def soft_cross_entropy(predicts, targets):
             student_likelihood = torch.nn.functional.log_softmax(predicts, dim=-1)
             targets_prob = torch.nn.functional.softmax(targets, dim=-1)
@@ -1066,9 +1192,11 @@ def main():
         global_step = 0
         best_dev_acc = 0.0
         output_eval_file = os.path.join(args.output_dir, "eval_results.txt")
+
         if 'depth_or_width' in args:
-            max_prun_times, prun_times, prun_freq, prun_step = init_prun(args, teacher_model.config.num_hidden_layers, 
-                                                            teacher_model.config.num_attention_heads, len(train_data))
+            max_prun_times, prun_times, prun_freq, prun_step = init_prun(args, teacher_model.config.num_hidden_layers,
+                                                                         teacher_model.config.num_attention_heads,
+                                                                         len(train_data))
             best_acc_step = max_prun_times * prun_step
         else:
             prun_times, max_prun_times, prun_step = -1, -1, -1
@@ -1082,33 +1210,36 @@ def main():
             student_model.train()
             nb_tr_examples, nb_tr_steps = 0, 0
 
-            for step, batch in enumerate(tqdm(train_dataloader, desc="Iteration", ascii=True)):
+            for step, batch in enumerate(tqdm(train_dataloader, desc=f"Epoch {epoch_ + 1}: ", ascii=True)):
                 batch = tuple(t.to(device) for t in batch)
 
                 input_ids, input_mask, segment_ids, label_ids, seq_lengths = batch
                 if input_ids.size()[0] != args.train_batch_size:
                     continue
-                if (args.patience is not None) and (global_step-best_acc_step >= args.patience*num_train_optimization_steps/args.num_train_epochs):
+                if (args.patience is not None) and (
+                        global_step - best_acc_step >= args.patience * num_train_optimization_steps / args.num_train_epochs):
                     return
 
-                if (global_step+1)%prun_step == 0 and prun_times<max_prun_times and 'depth_or_width' in args:
+                if (global_step + 1) % prun_step == 0 and prun_times < max_prun_times and 'depth_or_width' in args:
                     prun_times += 1
-                    logger.info("Pruning after %.2f epoches"%(prun_times*prun_freq))
-                    student_model, optimizer = iterative_pruning(args, student_model, teacher_model, optimizer, tokenizer,
-                                                                num_train_optimization_steps, prun_step, max_prun_times, 
-                                                                prun_times, num_labels, device)
+                    logger.info("Pruning after %.2f epoches" % (prun_times * prun_freq))
+                    student_model, optimizer = iterative_pruning(args, student_model, teacher_model, optimizer,
+                                                                 tokenizer,
+                                                                 num_train_optimization_steps, prun_step,
+                                                                 max_prun_times,
+                                                                 prun_times, num_labels, device)
                 rep_loss = 0.
                 cls_loss = 0.
 
                 student_logits, _, student_reps = student_model(input_ids, segment_ids, input_mask,
-                                                                           is_student=True)
+                                                                is_student=True)
                 with torch.no_grad():
                     teacher_logits, _, teacher_reps = teacher_model(input_ids, segment_ids, input_mask)
 
                 if args.repr_distill:
                     teacher_layer_num = teacher_model.config.num_hidden_layers
                     student_layer_num = student_model.config.num_hidden_layers
-                    prun_layer_ratio = student_layer_num/teacher_layer_num
+                    prun_layer_ratio = student_layer_num / teacher_layer_num
                     layers_per_block = int(teacher_layer_num / student_layer_num)
 
                     try:
@@ -1116,11 +1247,13 @@ def main():
                         new_teacher_reps = [teacher_reps[i * layers_per_block] for i in range(student_layer_num + 1)]
                     except AssertionError:
                         # Use mod to drop layers if not teacher_layer_num % student_layer_num == 0
-                        new_teacher_reps = [teacher_reps[i] for i in range(teacher_layer_num+1) if not (i+1)%(1/prun_layer_ratio)<1e-5]
+                        new_teacher_reps = [teacher_reps[i] for i in range(teacher_layer_num + 1) if
+                                            not (i + 1) % (1 / prun_layer_ratio) < 1e-5]
 
                     for student_rep, teacher_rep in zip(student_reps, new_teacher_reps):
                         tmp_loss = loss_mse(student_rep, teacher_rep)
                         rep_loss += tmp_loss
+
                     tr_rep_loss += rep_loss.item()
 
                 if args.pred_distill:
@@ -1132,6 +1265,7 @@ def main():
                         cls_loss = loss_mse(student_logits.view(-1), label_ids.view(-1))
 
                     tr_cls_loss += cls_loss.item()
+
                 loss = rep_loss + cls_loss
 
                 if n_gpu > 1:
@@ -1152,99 +1286,106 @@ def main():
                     optimizer.zero_grad()
                     global_step += 1
 
-                if (global_step + 1) % args.eval_step == 0 and not args.compute_taylor:
-                    logger.info("***** Running evaluation *****")
-                    logger.info("  Epoch = {} iter {} step".format(epoch_, global_step))
-                    logger.info("  Num examples = %d", len(eval_data))
-                    logger.info("  Batch size = %d", args.eval_batch_size)
-                    lr = optimizer.param_groups[0]['lr'] * \
-                    optimizer.param_groups[0]['schedule'].get_lr(global_step-prun_step*prun_times)
-                    for group in optimizer.param_groups:
-                        for p in group['params']:
-                            optim_step = optimizer.state[p]['step']
-                            break
+            if not args.compute_taylor:
+                logger.info("***** Running evaluation *****")
+                logger.info("  Epoch = {} iter {} step".format(epoch_, global_step))
+                logger.info("  Num examples = %d", len(eval_data))
+                logger.info("  Batch size = %d", args.eval_batch_size)
+
+                lr = optimizer.param_groups[0]['lr'] * \
+                     optimizer.param_groups[0]['schedule'].get_lr(global_step - prun_step * prun_times)
+
+                for group in optimizer.param_groups:
+                    for p in group['params']:
+                        optim_step = optimizer.state[p]['step']
                         break
-                    logger.info("  Learning rate = %.2e", lr)
+                    break
+                logger.info("  Learning rate = %.2e", lr)
+                student_model.eval()
 
-                    student_model.eval()
+                loss = tr_loss / nb_tr_steps
+                cls_loss = tr_cls_loss / nb_tr_steps
+                rep_loss = tr_rep_loss / nb_tr_steps
 
-                    loss = tr_loss / (step + 1)
-                    cls_loss = tr_cls_loss / (step + 1)
-                    rep_loss = tr_rep_loss / (step + 1)
+                result = {}
+                if args.pred_distill:
+                    result, _ = do_eval(student_model, task_name, eval_dataloader,
+                                        device, output_mode, eval_labels, num_labels)
 
-                    result = {}
-                    if args.pred_distill:
-                        result = do_eval(student_model, task_name, eval_dataloader,
-                                         device, output_mode, eval_labels, num_labels)
-                    result['global_step'] = global_step
-                    result['cls_loss'] = cls_loss
-                    result['rep_loss'] = rep_loss
-                    result['loss'] = loss
-                    result['lr'] = lr
-                    result['optim_step'] = optim_step
-                    if tb_writer is not None:
-                        for k, v in result.items():
-                            tb_writer.add_scalar(k, v, global_step)
+                result['epoch'] = epoch_ + 1
+                result['global_step'] = global_step
+                result['cls_loss'] = cls_loss
+                result['rep_loss'] = rep_loss
+                result['loss'] = loss
+                result['lr'] = lr
+                result['optim_step'] = optim_step
+                result_to_text_file(result, output_eval_file)
 
+                if (not args.pred_distill) or (prun_times < max_prun_times):
+                    save_model = True
+                elif prun_times >= max_prun_times:
+                    save_model = False
 
-                    if (not args.pred_distill) or (prun_times<max_prun_times):
+                    if (task_name in acc_tasks or 'multiemo' in task_name) and result['acc'] > best_dev_acc:
+                        best_dev_acc = result['acc']
                         save_model = True
-                    elif  prun_times>=max_prun_times:
-                        save_model = False
+                        best_acc_step = global_step
 
-                        if task_name in acc_tasks and result['acc'] > best_dev_acc:
-                            best_dev_acc = result['acc']
-                            save_model = True
-                            best_acc_step = global_step
+                    if task_name in corr_tasks and result['corr'] > best_dev_acc:
+                        best_dev_acc = result['corr']
+                        save_model = True
+                        best_acc_step = global_step
 
-                        if task_name in corr_tasks and result['corr'] > best_dev_acc:
-                            best_dev_acc = result['corr']
-                            save_model = True
-                            best_acc_step = global_step
+                    if task_name in mcc_tasks and result['mcc'] > best_dev_acc:
+                        best_dev_acc = result['mcc']
+                        save_model = True
+                        best_acc_step = global_step
 
-                        if task_name in mcc_tasks and result['mcc'] > best_dev_acc:
-                            best_dev_acc = result['mcc']
-                            save_model = True
-                            best_acc_step = global_step
+                if save_model:
+                    logger.info("***** Save model *****")
+                    model_to_save = student_model.module if hasattr(student_model, 'module') else student_model
 
+                    model_name = WEIGHTS_NAME
+                    # if not args.pred_distill:
+                    #     model_name = "step_{}_{}".format(global_step, WEIGHTS_NAME)
+                    output_model_file = os.path.join(args.output_dir, model_name)
+                    output_config_file = os.path.join(args.output_dir, CONFIG_NAME)
 
-                    if save_model:
-                        logger.info("***** Save model *****")
-                        result_to_file(result, output_eval_file)
+                    torch.save(model_to_save.state_dict(), output_model_file)
+                    model_to_save.config.to_json_file(output_config_file)
+                    tokenizer.save_vocabulary(args.output_dir)
 
-                        model_to_save = student_model.module if hasattr(student_model, 'module') else student_model
+                student_model.train()
 
-                        model_name = WEIGHTS_NAME
-                        # if not args.pred_distill:
-                        #     model_name = "step_{}_{}".format(global_step, WEIGHTS_NAME)
-                        output_model_file = os.path.join(args.output_dir, model_name)
-                        output_config_file = os.path.join(args.output_dir, CONFIG_NAME)
+        # Measure End Time
+        training_end_time = time.monotonic()
 
-                        torch.save(model_to_save.state_dict(), output_model_file)
-                        model_to_save.config.to_json_file(output_config_file)
-                        tokenizer.save_vocabulary(args.output_dir)
+        diff = timedelta(seconds=training_end_time - training_start_time)
+        diff_seconds = diff.total_seconds()
 
-                    student_model.train()
+        training_parameters = vars(args)
+        training_parameters['training_time'] = diff_seconds
+
+        output_training_params_file = os.path.join(args.output_dir, "training_params.json")
+        dictionary_to_json(training_parameters, output_training_params_file)
 
         if args.compute_taylor:
             score = optimizer.get_taylor(global_step)
             score_dict = {}
             modules2prune = []
             for i in range(student_model.config.num_hidden_layers):
-                modules2prune += ['encoder.layer.%d.attention.self.query.weight'%i,
-                                 'encoder.layer.%d.attention.self.key.weight'%i,
-                                 'encoder.layer.%d.attention.self.value.weight'%i,
-                                 'encoder.layer.%d.attention.output.dense.weight'%i,
-                                 'encoder.layer.%d.intermediate.dense.weight'%i,
-                                 'encoder.layer.%d.output.dense.weight'%i]
+                modules2prune += ['encoder.layer.%d.attention.self.query.weight' % i,
+                                  'encoder.layer.%d.attention.self.key.weight' % i,
+                                  'encoder.layer.%d.attention.self.value.weight' % i,
+                                  'encoder.layer.%d.attention.output.dense.weight' % i,
+                                  'encoder.layer.%d.intermediate.dense.weight' % i,
+                                  'encoder.layer.%d.output.dense.weight' % i]
             for name, param in list(student_model.bert.named_parameters()):
                 if name in modules2prune:
                     cur_score = score[param]
                     score_dict[name] = cur_score.cpu()
-            torch.save(score_dict, '%s/taylor.pkl'%args.output_dir)
+            torch.save(score_dict, '%s/taylor.pkl' % args.output_dir)
 
-        if 'tb_writer' in dir():
-            tb_writer.close()
 
 if __name__ == "__main__":
     main()

@@ -25,6 +25,9 @@ import os
 import random
 import sys
 import json
+import time
+from datetime import timedelta
+from typing import List
 
 import numpy as np
 import torch
@@ -35,12 +38,13 @@ from tqdm import tqdm, trange
 
 from torch.nn import CrossEntropyLoss, MSELoss
 from scipy.stats import pearsonr, spearmanr
-from sklearn.metrics import matthews_corrcoef, f1_score
+from sklearn.metrics import matthews_corrcoef, f1_score, accuracy_score, classification_report
 
 from transformer.modeling_prun import TinyBertForSequenceClassification as PrunBertForSequenceClassification
 from transformer.tokenization import BertTokenizer
 from transformer.optimization import BertAdam
 from transformer.file_utils import WEIGHTS_NAME, CONFIG_NAME
+from utils import result_to_text_file, dictionary_to_json
 
 csv.field_size_limit(sys.maxsize)
 
@@ -52,21 +56,6 @@ fh.setFormatter(logging.Formatter(log_format))
 logging.getLogger().addHandler(fh)
 logger = logging.getLogger()
 
-
-
-try:
-    from tensorboardX import SummaryWriter
-    _has_tensorboard = True
-except ImportError:
-    _has_tensorboard = False
-def is_tensorboard_available():
-    return _has_tensorboard
-
-oncloud = True
-try:
-    import moxing as mox
-except:
-    oncloud = False
 
 class InputExample(object):
     """A single training/test example for simple sequence classification."""
@@ -111,8 +100,8 @@ class DataProcessor(object):
         """Gets a collection of `InputExample`s for the dev set."""
         raise NotImplementedError()
 
-    def get_dev_examples(self, data_dir):
-        """Gets a collection of `InputExample`s for the dev set."""
+    def get_test_examples(self, data_dir):
+        """Gets a collection of `InputExample`s for the test set."""
         raise NotImplementedError()
 
     def get_labels(self):
@@ -130,6 +119,13 @@ class DataProcessor(object):
                     line = list(unicode(cell, 'utf-8') for cell in line)
                 lines.append(line)
             return lines
+
+    @classmethod
+    def _read_txt(cls, input_file: str) -> List[str]:
+        """Reads a tab separated value file."""
+        with open(input_file, "r", encoding='UTF-8') as f:
+            lines = f.read().splitlines()
+        return lines
 
 
 class MrpcProcessor(DataProcessor):
@@ -536,6 +532,54 @@ class WnliProcessor(DataProcessor):
         return examples
 
 
+class MultiemoProcessor(DataProcessor):
+    """Processor for the Multiemo set"""
+
+    def __init__(self, lang: str, domain: str, kind: str):
+        super(MultiemoProcessor, self).__init__()
+        self.lang = lang.lower()
+        self.domain = domain.lower()
+        self.kind = kind.lower()
+
+    def get_train_examples(self, data_dir: str) -> List[InputExample]:
+        """See base class."""
+        file_path = self.get_set_type_path(data_dir, 'train')
+        logger.info(f"LOOKING AT {file_path}")
+        return self._create_examples(self._read_txt(file_path), "train")
+
+    def get_dev_examples(self, data_dir: str) -> List[InputExample]:
+        """See base class."""
+        file_path = self.get_set_type_path(data_dir, 'dev')
+        return self._create_examples(self._read_txt(file_path), "dev")
+
+    def get_test_examples(self, data_dir: str) -> List[InputExample]:
+        """See base class."""
+        file_path = self.get_set_type_path(data_dir, 'test')
+        return self._create_examples(self._read_txt(file_path), "test")
+
+    def get_set_type_path(self, data_dir: str, set_type: str) -> str:
+        return os.path.join(data_dir, self.domain + '.' + self.kind + '.' + set_type + '.' + self.lang + '.txt')
+
+    def get_labels(self) -> List[str]:
+        """See base class."""
+        if self.kind == 'text':
+            return ["meta_amb", "meta_minus_m", "meta_plus_m", "meta_zero"]
+        else:
+            return ["z_amb", "z_minus_m", "z_plus_m", "z_zero"]
+
+    @staticmethod
+    def _create_examples(lines: List[str], set_type: str) -> List[InputExample]:
+        examples = []
+        for (i, line) in enumerate(lines):
+            guid = "%s-%s" % (set_type, i)
+            split_line = line.split('__label__')
+            text_a = split_line[0]
+            label = split_line[1]
+            examples.append(
+                InputExample(guid=guid, text_a=text_a, text_b=None, label=label))
+        return examples
+
+
 def convert_examples_to_features(examples, label_list, max_seq_length,
                                  tokenizer, output_mode, dataset_type):
     """Loads a data file into a list of `InputBatch`s."""
@@ -628,6 +672,16 @@ def acc_and_f1(preds, labels):
     }
 
 
+def multiclass_acc_and_f1(preds, labels):
+    acc = accuracy_score(y_true=labels, y_pred=preds)
+    f1 = f1_score(y_true=labels, y_pred=preds, average='macro')
+    return {
+        "acc": acc,
+        "f1": f1,
+        "acc_and_f1": (acc + f1) / 2,
+    }
+
+
 def pearson_and_spearman(preds, labels):
     pearson_corr = pearsonr(preds, labels)[0]
     spearman_corr = spearmanr(preds, labels)[0]
@@ -640,7 +694,9 @@ def pearson_and_spearman(preds, labels):
 
 def compute_metrics(task_name, preds, labels):
     assert len(preds) == len(labels)
-    if task_name == "cola":
+    if 'multiemo' in task_name:
+        return multiclass_acc_and_f1(preds, labels)
+    elif task_name == "cola":
         return {"mcc": matthews_corrcoef(labels, preds)}
     elif task_name == "sst-2":
         return {"acc": simple_accuracy(preds, labels)}
@@ -690,7 +746,7 @@ def do_eval(model, task_name, eval_dataloader,
             device, output_mode, eval_labels, num_labels):
     eval_loss = 0
     nb_eval_steps = 0
-    preds = []
+    all_logits = None
 
     for batch_ in tqdm(eval_dataloader, desc="Evaluating"):
         batch_ = tuple(t.to(device) for t in batch_)
@@ -706,32 +762,36 @@ def do_eval(model, task_name, eval_dataloader,
         elif output_mode == "regression":
             loss_fct = MSELoss()
             tmp_eval_loss = loss_fct(logits.view(-1), label_ids.view(-1))
+        else:
+            raise ValueError('Not known output model')
 
         eval_loss += tmp_eval_loss.mean().item()
         nb_eval_steps += 1
-        if len(preds) == 0:
-            preds.append(logits.detach().cpu().numpy())
+
+        if all_logits is None:
+            all_logits = logits.detach().cpu().numpy()
         else:
-            preds[0] = np.append(
-                preds[0], logits.detach().cpu().numpy(), axis=0)
+            all_logits = np.append(all_logits, logits.detach().cpu().numpy(), axis=0)
 
     eval_loss = eval_loss / nb_eval_steps
 
-    preds = preds[0]
     if output_mode == "classification":
-        preds = np.argmax(preds, axis=1)
+        preds = np.argmax(all_logits, axis=1)
     elif output_mode == "regression":
-        preds = np.squeeze(preds)
+        preds = np.squeeze(all_logits)
+    else:
+        raise ValueError('Not known output model')
+
     result = compute_metrics(task_name, preds, eval_labels.numpy())
     result['eval_loss'] = eval_loss
+    return result, all_logits
 
-    return result
 
 def do_predict(model, task_name, eval_dataloader,
-            device, output_mode, num_labels):
+               device, output_mode, num_labels):
     eval_loss = 0
     nb_eval_steps = 0
-    preds = []
+    all_logits = None
 
     for batch_ in tqdm(eval_dataloader, desc="Evaluating"):
         batch_ = tuple(t.to(device) for t in batch_)
@@ -740,35 +800,42 @@ def do_predict(model, task_name, eval_dataloader,
             logits, _, _ = model(input_ids, segment_ids, input_mask)
 
         nb_eval_steps += 1
-        if len(preds) == 0:
-            preds.append(logits.detach().cpu().numpy())
+        if all_logits is None:
+            all_logits = logits.detach().cpu().numpy()
         else:
-            preds[0] = np.append(
-                preds[0], logits.detach().cpu().numpy(), axis=0)
+            all_logits = np.append(all_logits, logits.detach().cpu().numpy(), axis=0)
 
-    preds = preds[0]
     if output_mode == "classification":
-        preds = np.argmax(preds, axis=1)
+        preds = np.argmax(all_logits, axis=1)
     elif output_mode == "regression":
-        preds = np.squeeze(preds)
+        preds = np.squeeze(all_logits)
+    else:
+        raise ValueError('Not known output model')
+
     return preds
 
+
 def build_dataloader(dataset_type, args, processor, label_list, tokenizer, output_mode):
-    if dataset_type=='dev':
+    if dataset_type == 'dev':
         eval_examples = processor.get_dev_examples(args.data_dir)
-    elif dataset_type=='test':
+    elif dataset_type == 'eval':
+        eval_examples = processor.get_dev_examples(args.data_dir)
+    elif dataset_type == 'test':
         eval_examples = processor.get_test_examples(args.data_dir)
-    eval_features = convert_examples_to_features(eval_examples, label_list, args.max_seq_length, tokenizer, output_mode, dataset_type)
+
+    eval_features = convert_examples_to_features(eval_examples, label_list, args.max_seq_length, tokenizer, output_mode,
+                                                 dataset_type)
     eval_data, eval_labels = get_tensor_data(output_mode, eval_features, dataset_type)
     eval_sampler = SequentialSampler(eval_data)
     eval_dataloader = DataLoader(eval_data, sampler=eval_sampler, batch_size=args.eval_batch_size)
     return eval_dataloader, len(eval_examples), eval_labels
 
+
 def write_predictions(predictions, args, task_name, output_mode, label_list):
     label_map = {i: label for i, label in enumerate(label_list)}
     output_test_file = os.path.join(
-            args.output_dir, f"test_results_{task_name}.txt"
-        )
+        args.output_dir, f"test_results_{task_name}.txt"
+    )
     logger.info("***** Eval results *****")
     with open(output_test_file, "w") as writer:
         logger.info("***** Test results {} *****".format(task_name))
@@ -778,12 +845,9 @@ def write_predictions(predictions, args, task_name, output_mode, label_list):
                 pred = round(pred, 3)
             else:
                 pred = label_map[pred]
+
             writer.write("%d\t%s\n" % (index, pred))
-            #if output_mode == "regression":
-            #    writer.write("%d\t%3.3f\n" % (index, item))
-            #else:
-            #    #item = test_dataset.get_labels()[item]
-            #    writer.write("%d\t%s\n" % (index, item))
+
 
 def main():
     parser = argparse.ArgumentParser()
@@ -871,17 +935,18 @@ def main():
 
     # intermediate distillation default parameters
     default_params = {
-            "cola": {"num_train_epochs": 50, "max_seq_length": 64, 'train_batch_size': 32},
-            "mnli": {"num_train_epochs": 5, "max_seq_length": 128, 'train_batch_size': 64},
-            "mrpc": {"num_train_epochs": 20, "max_seq_length": 128, 'train_batch_size': 32},
-            "sst-2": {"num_train_epochs": 10, "max_seq_length": 64, 'train_batch_size': 32},
-            "sts-b": {"num_train_epochs": 20, "max_seq_length": 128, 'train_batch_size': 32},
-            "qqp": {"num_train_epochs": 5, "max_seq_length": 128, 'train_batch_size': 64},
-            "qnli": {"num_train_epochs": 10, "max_seq_length": 128, 'train_batch_size': 64},
-            "rte": {"num_train_epochs": 20, "max_seq_length": 128, 'train_batch_size': 32}
+        "multiemo": {"num_train_epochs": 3, "max_seq_length": 128, "train_batch_size": 16},
+        "cola": {"num_train_epochs": 50, "max_seq_length": 64, 'train_batch_size': 32},
+        "mnli": {"num_train_epochs": 5, "max_seq_length": 128, 'train_batch_size': 64},
+        "mrpc": {"num_train_epochs": 20, "max_seq_length": 128, 'train_batch_size': 32},
+        "sst-2": {"num_train_epochs": 10, "max_seq_length": 64, 'train_batch_size': 32},
+        "sts-b": {"num_train_epochs": 20, "max_seq_length": 128, 'train_batch_size': 32},
+        "qqp": {"num_train_epochs": 5, "max_seq_length": 128, 'train_batch_size': 64},
+        "qnli": {"num_train_epochs": 10, "max_seq_length": 128, 'train_batch_size': 64},
+        "rte": {"num_train_epochs": 20, "max_seq_length": 128, 'train_batch_size': 32}
     }
 
-    acc_tasks = ["mnli", "mrpc", "sst-2", "qqp", "qnli", "rte"]
+    acc_tasks = ["mnli", "mrpc", "sst-2", "qqp", "qnli", "rte", "multiemo"]
     corr_tasks = ["sts-b"]
     mcc_tasks = ["cola"]
 
@@ -902,7 +967,6 @@ def main():
     if n_gpu > 0:
         torch.cuda.manual_seed_all(args.seed)
 
-
     task_name = args.task_name.lower()
 
     # Prepare task settings
@@ -913,36 +977,65 @@ def main():
 
     if task_name in default_params:
         args.max_seq_length = default_params[task_name]["max_seq_length"]
+    elif 'multiemo' in task_name:
+        args.max_seq_length = default_params['multiemo']["max_seq_length"]
 
-    if task_name not in processors:
+    if task_name not in processors or 'multiemo' in task_name:
         raise ValueError("Task not found: %s" % task_name)
 
-    processor = processors[task_name]()
-    output_mode = output_modes[task_name]
+    if 'multiemo' in task_name:
+        _, lang, domain, kind = task_name.split('_')
+        processor = MultiemoProcessor(lang, domain, kind)
+    else:
+        processor = processors[task_name]()
+
+    if 'multiemo' in task_name:
+        output_mode = 'classification'
+    else:
+        output_mode = output_modes[task_name]
+
     label_list = processor.get_labels()
     num_labels = len(label_list)
     tokenizer = BertTokenizer.from_pretrained(args.student_model, do_lower_case=args.do_lower_case)
-
 
     student_model = PrunBertForSequenceClassification.from_pretrained(args.student_model, num_labels=num_labels)
     student_model.to(device)
     student_model.eval()
 
     if args.do_eval:
-        eval_dataloader, num_eval_examples, eval_labels = build_dataloader('dev', args, processor, label_list, tokenizer, output_mode)
-        logger.info("***** Running evaluation *****")
+        eval_dataloader, num_eval_examples, eval_labels = build_dataloader('test', args, processor, label_list,
+                                                                           tokenizer, output_mode)
+        logger.info("\n***** Running evaluation on test dataset *****")
         logger.info("  Num examples = %d", num_eval_examples)
         logger.info("  Batch size = %d", args.eval_batch_size)
-        result = do_eval(student_model, task_name, eval_dataloader,
-                         device, output_mode, eval_labels, num_labels)
+
+        eval_start_time = time.monotonic()
+        result, y_logits = do_eval(student_model, task_name, eval_dataloader,
+                                   device, output_mode, eval_labels, num_labels)
+        eval_end_time = time.monotonic()
+
+        diff = timedelta(seconds=eval_end_time - eval_start_time)
+        diff_seconds = diff.total_seconds()
+        result['eval_time'] = diff_seconds
+        result_to_text_file(result, os.path.join(args.output_dir, "test_results.txt"))
+
         logger.info("***** Eval results *****")
-        output_eval_file = os.path.join(args.output_dir, "eval_results.txt")
-        result_to_file(result, output_eval_file)
+        for key in sorted(result.keys()):
+            logger.info("  %s = %s", key, str(result[key]))
+
+        y_pred = np.argmax(y_logits, axis=1)
+        print('\n\t**** Classification report ****\n')
+        print(classification_report(eval_labels.numpy(), y_pred, target_names=label_list))
+
+        report = classification_report(eval_labels.numpy(), y_pred, target_names=label_list, output_dict=True)
+        report['eval_time'] = diff_seconds
+        dictionary_to_json(report, os.path.join(args.output_dir, "test_results.json"))
 
         if task_name == "mnli":
             task_name = "mnli-mm"
             processor = processors[task_name]()
-            eval_dataloader, num_eval_examples, eval_labels = build_dataloader('dev', args, processor, label_list, tokenizer, output_mode)
+            eval_dataloader, num_eval_examples, eval_labels = build_dataloader('dev', args, processor, label_list,
+                                                                               tokenizer, output_mode)
             logger.info("***** Running mm evaluation *****")
             logger.info("  Num examples = %d", num_eval_examples)
             logger.info("  Batch size = %d", args.eval_batch_size)
@@ -954,25 +1047,27 @@ def main():
 
     if args.do_predict:
         processor = processors[task_name]()
-        test_dataloader, num_test_examples, _ = build_dataloader('test', args, processor, label_list, tokenizer, output_mode)
+        test_dataloader, num_test_examples, _ = build_dataloader('test', args, processor, label_list, tokenizer,
+                                                                 output_mode)
         logger.info("***** Running prediction *****")
         logger.info("  Num examples = %d", num_test_examples)
         logger.info("  Batch size = %d", args.eval_batch_size)
         predictions = do_predict(student_model, task_name, test_dataloader,
-                         device, output_mode, num_labels)
+                                 device, output_mode, num_labels)
         label_list = processor.get_labels()
         write_predictions(predictions, args, task_name, output_mode, label_list)
 
         if task_name == "mnli":
             task_name = "mnli-mm"
             processor = processors[task_name]()
-            test_dataloader, num_test_examples, _ = build_dataloader('test', args, processor, label_list, tokenizer, output_mode)
+            test_dataloader, num_test_examples, _ = build_dataloader('test', args, processor, label_list, tokenizer,
+                                                                     output_mode)
 
             logger.info("***** Running mm prediction *****")
             logger.info("  Num examples = %d", num_test_examples)
             logger.info("  Batch size = %d", args.eval_batch_size)
             predictions = do_predict(student_model, task_name, test_dataloader,
-                             device, output_mode, num_labels)
+                                     device, output_mode, num_labels)
             write_predictions(predictions, args, task_name, output_mode, label_list)
             task_name = 'mnli'
 
