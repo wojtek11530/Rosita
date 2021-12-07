@@ -66,7 +66,7 @@ def main():
         run_process(cmd)
 
     if not os.path.exists(os.path.join(MODEL_FOLDER, 'bert-8layer', 'iter_depth_prun', 'multiemo_en_all_sentence')):
-        cmd = 'python3 KD/train.py '
+        cmd = 'python3 train.py '
         options = [
             '--config_dir', 'configurations/config_bert-8layer.json',
             '--task_name', 'multiemo_en_all_sentence',
@@ -77,7 +77,7 @@ def main():
         run_process(cmd)
 
     if not os.path.exists(os.path.join(MODEL_FOLDER, 'setting4', 'multiemo_en_all_sentence')):
-        cmd = 'python3 -m KD.train '
+        cmd = 'python3 -m train '
         options = [
             '--config_dir', 'configurations/config_setting4.json',
             '--task_name', 'multiemo_en_all_sentence',

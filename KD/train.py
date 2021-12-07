@@ -1086,7 +1086,7 @@ def main():
     fw_args.write(str(args))
     fw_args.close()
 
-    if task_name not in processors or 'multiemo' in task_name:
+    if task_name not in processors and 'multiemo' not in task_name:
         raise ValueError("Task not found: %s" % task_name)
 
     if 'multiemo' in task_name:

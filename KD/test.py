@@ -976,7 +976,7 @@ def main():
     elif 'multiemo' in task_name:
         args.max_seq_length = default_params['multiemo']["max_seq_length"]
 
-    if task_name not in processors or 'multiemo' in task_name:
+    if task_name not in processors and 'multiemo' not in task_name:
         raise ValueError("Task not found: %s" % task_name)
 
     if 'multiemo' in task_name:
