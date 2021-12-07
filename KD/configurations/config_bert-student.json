@@ -10,7 +10,7 @@
   "learning_rate": 2e-05,
   "repr_distill": false,
   "pred_distill": true,
-  "num_train_epochs": 5
+  "num_train_epochs": 3
  },
  "cola": {
   "teacher_model": "../models/bert_ft/CoLA",
