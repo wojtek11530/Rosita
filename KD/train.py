@@ -732,7 +732,7 @@ def do_eval(model, task_name, eval_dataloader,
     return result, all_logits
 
 
-def pruning(model, optimizer, model_path, keep_layers, keep_heads, ffn_hidden_dim, emb_hidden_dim, \
+def pruning(model, optimizer, model_path, keep_layers, keep_heads, ffn_hidden_dim, emb_hidden_dim,
             num_labels, prun_step, device, task, schedule, next_lr, next_t_total):
     score = optimizer.get_taylor(prun_step)
     score_dict = {}
@@ -759,7 +759,8 @@ def pruning(model, optimizer, model_path, keep_layers, keep_heads, ffn_hidden_di
                                     -ffn_hidden_dim %d\
                                     -emb_hidden_dim %d\
                                     -task %s\
-                                    " % (model_path, keep_heads, keep_layers, ffn_hidden_dim, emb_hidden_dim, task)
+                                    -num_labels %d\
+                                    " % (model_path, keep_heads, keep_layers, ffn_hidden_dim, emb_hidden_dim, task, num_labels)
     os.system(prun_command)
     model = PrunTinyBertForSequenceClassification.from_pretrained(output_dir, num_labels=num_labels)
     model.to(device)
