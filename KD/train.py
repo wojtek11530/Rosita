@@ -760,7 +760,8 @@ def pruning(model, optimizer, model_path, keep_layers, keep_heads, ffn_hidden_di
                                     -emb_hidden_dim %d\
                                     -task %s\
                                     -num_labels %d\
-                                    " % (model_path, keep_heads, keep_layers, ffn_hidden_dim, emb_hidden_dim, task, num_labels)
+                                    " % (model_path, keep_heads, keep_layers, ffn_hidden_dim, emb_hidden_dim,
+                                         task, num_labels)
     os.system(prun_command)
     model = PrunTinyBertForSequenceClassification.from_pretrained(output_dir, num_labels=num_labels)
     model.to(device)

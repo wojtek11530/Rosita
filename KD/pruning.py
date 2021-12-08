@@ -167,7 +167,7 @@ def main():
     print('Loading BERT...')
     model = PrunTinyBertForSequenceClassification.from_pretrained(
         args.model_path,
-        num_labels=num_labels[args.num_labels]
+        num_labels=num_labels
     )
     config = model.config
     tokenizer = BertTokenizer.from_pretrained(args.model_path, do_lower_case=True)
@@ -199,7 +199,7 @@ def main():
     torch.save(model.state_dict(), os.path.join(output_dir, 'pytorch_model.bin'))
     new_config.save_pretrained(output_dir)
     tokenizer.save_vocabulary(output_dir)
-    model = PrunTinyBertForSequenceClassification.from_pretrained(output_dir, num_labels=num_labels[args.task.lower()])
+    model = PrunTinyBertForSequenceClassification.from_pretrained(output_dir, num_labels=num_labels)
     torch.save(model.state_dict(), os.path.join(output_dir, 'pytorch_model.bin'))
     print("Number of parameters: %d" % sum([model.state_dict()[key].nelement() for key in model.state_dict()]))
 
