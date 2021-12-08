@@ -165,10 +165,9 @@ def main():
     torch.manual_seed(0)
 
     print('Loading BERT...')
-    model = PrunTinyBertForSequenceClassification.from_pretrained(
-        args.model_path,
-        num_labels=num_labels
-    )
+    print(num_labels)
+    model = PrunTinyBertForSequenceClassification.from_pretrained(args.model_path, num_labels=num_labels)
+
     config = model.config
     tokenizer = BertTokenizer.from_pretrained(args.model_path, do_lower_case=True)
     model.bert.encoder.layer = torch.nn.ModuleList([model.bert.encoder.layer[i] for i in range(args.num_layers)])
