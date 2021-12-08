@@ -1025,22 +1025,14 @@ def main():
         report['eval_time'] = diff_seconds
         dictionary_to_json(report, os.path.join(args.output_dir, "test_results.json"))
 
-        if task_name == "mnli":
-            task_name = "mnli-mm"
-            processor = processors[task_name]()
-            eval_dataloader, num_eval_examples, eval_labels = build_dataloader('dev', args, processor, label_list,
-                                                                               tokenizer, output_mode)
-            logger.info("***** Running mm evaluation *****")
-            logger.info("  Num examples = %d", num_eval_examples)
-            logger.info("  Batch size = %d", args.eval_batch_size)
-            result = do_eval(student_model, task_name, eval_dataloader,
-                             device, output_mode, eval_labels, num_labels)
-            output_eval_file = os.path.join(args.output_dir, "eval_results-mm.txt")
-            result_to_file(result, output_eval_file)
-            task_name = "mnli"
 
     if args.do_predict:
-        processor = processors[task_name]()
+        if 'multiemo' in task_name:
+            _, lang, domain, kind = task_name.split('_')
+            processor = MultiemoProcessor(lang, domain, kind)
+        else:
+            processor = processors[task_name]()
+
         test_dataloader, num_test_examples, _ = build_dataloader('test', args, processor, label_list, tokenizer,
                                                                  output_mode)
         logger.info("***** Running prediction *****")
@@ -1051,19 +1043,6 @@ def main():
         label_list = processor.get_labels()
         write_predictions(predictions, args, task_name, output_mode, label_list)
 
-        if task_name == "mnli":
-            task_name = "mnli-mm"
-            processor = processors[task_name]()
-            test_dataloader, num_test_examples, _ = build_dataloader('test', args, processor, label_list, tokenizer,
-                                                                     output_mode)
-
-            logger.info("***** Running mm prediction *****")
-            logger.info("  Num examples = %d", num_test_examples)
-            logger.info("  Batch size = %d", args.eval_batch_size)
-            predictions = do_predict(student_model, task_name, test_dataloader,
-                                     device, output_mode, num_labels)
-            write_predictions(predictions, args, task_name, output_mode, label_list)
-            task_name = 'mnli'
 
 
 if __name__ == "__main__":
