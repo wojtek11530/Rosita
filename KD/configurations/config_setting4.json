@@ -16,7 +16,7 @@
   "depth_or_width": "width",
   "repr_distill": true,
   "pred_distill": true,
-  "num_train_epochs": 50,
+  "num_train_epochs": 3,
   "patience": 10
  },
  "cola": {
