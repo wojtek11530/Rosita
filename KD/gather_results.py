@@ -46,7 +46,7 @@ def get_immediate_subdirectories(a_dir):
             if os.path.isdir(os.path.join(a_dir, name))]
 
 
-def gather_results(model_dir: str, task_name: str, depth_mult: float, width_mult: float) -> Dict[str, Any]:
+def gather_results(model_dir: str, task_name: str) -> Dict[str, Any]:
     task_subfolder = os.path.basename(model_dir)
 
     with open(os.path.join(model_dir, 'training_params.json')) as json_file:
