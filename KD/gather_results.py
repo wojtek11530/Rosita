@@ -31,7 +31,7 @@ def main():
 
     data = list()
     for subdirectory in models_subdirectories:
-        data_dict = gather_results(subdirectory, task_name, args.depth_mult, args.width_mult)
+        data_dict = gather_results(subdirectory, task_name)
         data.append(data_dict)
 
     df = pd.DataFrame(data)
