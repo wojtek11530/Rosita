@@ -5,14 +5,12 @@ from typing import Any, Dict
 
 import pandas as pd
 
-from transformers import BertConfig, BertForSequenceClassification
+from test import MultiemoProcessor
+from transformer.modeling_prun import TinyBertForSequenceClassification as PrunBertForSequenceClassification
 
-from KD.test import MultiemoProcessor
-from KD.transformer.modeling_prun import TinyBertForSequenceClassification as PrunBertForSequenceClassification
-
-PROJECT_FOLDER = os.path.dirname(os.path.abspath(__file__))
-DATA_FOLDER = os.path.join('data')
-MODELS_FOLDER = os.path.join('models')
+PROJECT_FOLDER = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+DATA_FOLDER = os.path.join(PROJECT_FOLDER, 'data')
+MODELS_FOLDER = os.path.join(PROJECT_FOLDER, 'models')
 FT_MODELS_FOLDER = os.path.join(MODELS_FOLDER, 'setting4')
 
 
