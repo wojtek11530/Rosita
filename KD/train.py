@@ -886,7 +886,7 @@ def build_dataloader(set_type, args, processor, label_list, tokenizer, output_mo
     sampler = SequentialSampler(dataset) if set_type in ['eval', 'test'] else RandomSampler(dataset)
     batch_size = args.eval_batch_size if set_type in ['eval', 'test'] else args.train_batch_size
     dataloader = DataLoader(dataset, sampler=sampler, batch_size=batch_size, collate_fn=collator.collate_batch,
-                            pin_memory=True)
+                            pin_memory=False)
     return dataloader, labels, dataset
 
 
@@ -1058,7 +1058,6 @@ def main():
         "qqp": {"max_seq_length": 128, 'train_batch_size': 64},
         "qnli": {"max_seq_length": 128, 'train_batch_size': 64},
         "rte": {"max_seq_length": 128, 'train_batch_size': 32}
-
     }
 
     acc_tasks = ["mnli", "mrpc", "sst-2", "qqp", "qnli", "rte", "multiemo"]
@@ -1133,7 +1132,7 @@ def main():
                 args.gradient_accumulation_steps))
         args.train_batch_size = args.train_batch_size // args.gradient_accumulation_steps
 
-        logger.info('Loading train data')
+        logger.info(f'Loading train datam, bs={args.train_batch_size}')
         try:
             logger.info('Try load from drive')
             if args.aug_train:
@@ -1144,7 +1143,7 @@ def main():
             collator = SmartCollator(0)
             train_sampler = RandomSampler(train_data)
             train_dataloader = DataLoader(train_data, sampler=train_sampler, batch_size=args.train_batch_size,
-                                          collate_fn=collator.collate_batch, pin_memory=True)
+                                          collate_fn=collator.collate_batch)
         except FileNotFoundError:
             logger.info('Building train data')
             train_dataloader, _, train_data = build_dataloader('train', args, processor, label_list, tokenizer,
