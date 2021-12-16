@@ -876,7 +876,7 @@ def build_dataloader(dataset_type, args, processor, label_list, tokenizer, outpu
     eval_features = convert_examples_to_features(eval_examples, label_list, args.max_seq_length, tokenizer, output_mode)
     eval_dataset, eval_labels = get_dataset_and_labels(output_mode, eval_features)
 
-    collator = SmartCollator(tokenizer.pad_token_id)
+    collator = SmartCollator(pad_token_id=0)
     eval_sampler = SequentialSampler(eval_dataset)
     eval_dataloader = DataLoader(eval_dataset, sampler=eval_sampler, batch_size=args.eval_batch_size,
                                  collate_fn=collator.collate_batch, pin_memory=True)

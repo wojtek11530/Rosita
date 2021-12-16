@@ -888,7 +888,7 @@ def build_dataloader(set_type, args, processor, label_list, tokenizer, output_mo
     features = convert_examples_to_features(examples, label_list, args.max_seq_length, tokenizer, output_mode)
     dataset, labels = get_dataset_and_labels(output_mode, features)
 
-    collator = SmartCollator(tokenizer.pad_token_id)
+    collator = SmartCollator(0)
     sampler = SequentialSampler(dataset) if set_type in ['eval', 'test'] else RandomSampler(dataset)
     batch_size = args.eval_batch_size if set_type in ['eval', 'test'] else args.train_batch_size
     dataloader = DataLoader(dataset, sampler=sampler, batch_size=batch_size, collate_fn=collator.collate_batch,
@@ -1147,7 +1147,7 @@ def main():
             else:
                 train_data = torch.load(os.path.join(args.data_dir, 'train.pt'))
 
-            collator = SmartCollator(tokenizer.pad_token_id)
+            collator = SmartCollator(0)
             train_sampler = RandomSampler(train_data)
             train_dataloader = DataLoader(train_data, sampler=train_sampler, batch_size=args.train_batch_size,
                                           collate_fn=collator.collate_batch, pin_memory=True)
