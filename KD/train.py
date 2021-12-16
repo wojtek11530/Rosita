@@ -1139,7 +1139,9 @@ def main():
                 args.gradient_accumulation_steps))
         args.train_batch_size = args.train_batch_size // args.gradient_accumulation_steps
 
+        logger.info('Loading train data')
         try:
+            logger.info('Try load from drive')
             if args.aug_train:
                 train_data = torch.load(os.path.join(args.data_dir, 'train_aug.pt'))
             else:
@@ -1150,6 +1152,7 @@ def main():
             train_dataloader = DataLoader(train_data, sampler=train_sampler, batch_size=args.train_batch_size,
                                           collate_fn=collator.collate_batch, pin_memory=True)
         except FileNotFoundError:
+            logger.info('Building train data')
             train_dataloader, _, train_data = build_dataloader('train', args, processor, label_list, tokenizer,
                                                                output_mode)
             if args.aug_train:
