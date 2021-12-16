@@ -22,16 +22,14 @@ import argparse
 import csv
 import logging
 import os
-import random
 import sys
 import time
 from datetime import timedelta
-from typing import List
+from typing import List, Optional, Dict
 
 import numpy as np
 import torch
-from torch.utils.data import (DataLoader, SequentialSampler,
-                              TensorDataset)
+from torch.utils.data import DataLoader, SequentialSampler
 from tqdm import tqdm
 
 from torch.nn import CrossEntropyLoss, MSELoss
@@ -577,7 +575,7 @@ class MultiemoProcessor(DataProcessor):
 
 
 def convert_examples_to_features(examples, label_list, max_seq_length,
-                                 tokenizer, output_mode, dataset_type):
+                                 tokenizer, output_mode):
     """Loads a data file into a list of `InputBatch`s."""
 
     label_map = {label: i for i, label in enumerate(label_list)}
@@ -587,35 +585,20 @@ def convert_examples_to_features(examples, label_list, max_seq_length,
         if ex_index % 10000 == 0:
             logger.info("Writing example %d of %d" % (ex_index, len(examples)))
 
-        tokens_a = tokenizer.tokenize(example.text_a)
+        inputs = tokenizer.encode_plus(
+            example.text_a,
+            example.text_b,
+            add_special_tokens=True,
+            max_length=max_seq_length,
+            return_attention_mask=True,
+            return_token_type_ids=True
+        )
 
-        tokens_b = None
-        if example.text_b:
-            tokens_b = tokenizer.tokenize(example.text_b)
-            _truncate_seq_pair(tokens_a, tokens_b, max_seq_length - 3)
-        else:
-            if len(tokens_a) > max_seq_length - 2:
-                tokens_a = tokens_a[:(max_seq_length - 2)]
-
-        tokens = ["[CLS]"] + tokens_a + ["[SEP]"]
-        segment_ids = [0] * len(tokens)
-
-        if tokens_b:
-            tokens += tokens_b + ["[SEP]"]
-            segment_ids += [1] * (len(tokens_b) + 1)
-
-        input_ids = tokenizer.convert_tokens_to_ids(tokens)
-        input_mask = [1] * len(input_ids)
+        input_ids = inputs["input_ids"]
+        segment_ids = inputs["token_type_ids"]
+        input_mask = inputs["attention_mask"]
         seq_length = len(input_ids)
 
-        padding = [0] * (max_seq_length - len(input_ids))
-        input_ids += padding
-        input_mask += padding
-        segment_ids += padding
-
-        assert len(input_ids) == max_seq_length
-        assert len(input_mask) == max_seq_length
-        assert len(segment_ids) == max_seq_length
         if output_mode == "classification":
             label_id = label_map[example.label]
         elif output_mode == "regression":
@@ -626,20 +609,79 @@ def convert_examples_to_features(examples, label_list, max_seq_length,
         if ex_index < 1:
             logger.info("*** Example ***")
             logger.info("guid: %s" % (example.guid))
-            logger.info("tokens: %s" % " ".join(
-                [str(x) for x in tokens]))
             logger.info("input_ids: %s" % " ".join([str(x) for x in input_ids]))
             logger.info("input_mask: %s" % " ".join([str(x) for x in input_mask]))
-            logger.info(
-                "segment_ids: %s" % " ".join([str(x) for x in segment_ids]))
+            logger.info("segment_ids: %s" % " ".join([str(x) for x in segment_ids]))
+            logger.info("label: {}".format(example.label))
+            logger.info("label_id: {}".format(label_id))
 
         features.append(
-            InputFeatures(input_ids=input_ids,
-                          input_mask=input_mask,
-                          segment_ids=segment_ids,
-                          label_id=label_id,
-                          seq_length=seq_length))
+            InputFeatures(
+                input_ids=input_ids,
+                input_mask=input_mask,
+                segment_ids=segment_ids,
+                label_id=label_id,
+                seq_length=seq_length
+            )
+        )
     return features
+
+
+class Dataset(torch.utils.data.Dataset):
+    def __init__(self, all_input_ids, all_attention_mask, all_token_type_ids,
+                 all_seq_lengths, labels: Optional[torch.Tensor] = None):
+        self.data = {
+            'input_ids': all_input_ids,
+            'token_type_ids': all_token_type_ids,
+            'attention_mask': all_attention_mask,
+            'seq_lengths': all_seq_lengths
+        }
+        self.n_examples = len(self.data['input_ids'])
+        if labels is not None:
+            self.data.update({'labels': labels})
+
+    def __getitem__(self, idx: int):
+        return {key: self.data[key][idx] for key in self.data.keys()}
+
+    def __len__(self):
+        return self.n_examples
+
+
+class SmartCollator:
+    def __init__(self, pad_token_id: int, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.pad_token_id = pad_token_id
+
+    def collate_batch(self, batch) -> Dict[str, torch.Tensor]:
+        max_size = max([len(example['input_ids']) for example in batch])
+
+        batch_inputs = list()
+        batch_attention_masks = list()
+        batch_token_type_ids = list()
+        labels = list()
+
+        for item in batch:
+            batch_inputs += [pad_seq(item['input_ids'], max_size, self.pad_token_id)]
+            batch_attention_masks += [pad_seq(item['attention_mask'], max_size, 0)]
+            if 'labels' in item.keys():
+                labels.append(item['labels'])
+            if 'token_type_ids' in item.keys():
+                batch_token_type_ids += [pad_seq(item['token_type_ids'], max_size, 0)]
+
+        out_batch = {
+            "input_ids": torch.tensor(batch_inputs, dtype=torch.long),
+            "attention_mask": torch.tensor(batch_attention_masks, dtype=torch.long)
+        }
+        if len(labels) != 0:
+            out_batch.update({'labels': torch.tensor(labels)})
+        if len(batch_token_type_ids) != 0:
+            out_batch.update({'token_type_ids': torch.tensor(batch_token_type_ids, dtype=torch.long)})
+
+        return out_batch
+
+
+def pad_seq(seq: List[int], max_batch_len: int, pad_value: int) -> List[int]:
+    return seq + (max_batch_len - len(seq)) * [pad_value]
 
 
 def _truncate_seq_pair(tokens_a, tokens_b, max_length):
@@ -716,18 +758,20 @@ def compute_metrics(task_name, preds, labels):
         raise KeyError(task_name)
 
 
-def get_tensor_data(output_mode, features, dataset_type):
+def get_dataset_and_labels(output_mode, features):
+    all_input_ids = [f.input_ids for f in features]
+    all_attention_mask = [f.input_mask for f in features]
+    all_token_type_ids = [f.segment_ids for f in features]
+    all_seq_lengths = [f.seq_length for f in features]
     if output_mode == "classification":
-        all_label_ids = torch.tensor([f.label_id for f in features], dtype=torch.long)
+        all_labels = torch.tensor([f.label for f in features], dtype=torch.long)
     elif output_mode == "regression":
-        all_label_ids = torch.tensor([f.label_id for f in features], dtype=torch.float)
-    all_seq_lengths = torch.tensor([f.seq_length for f in features], dtype=torch.long)
-    all_input_ids = torch.tensor([f.input_ids for f in features], dtype=torch.long)
-    all_input_mask = torch.tensor([f.input_mask for f in features], dtype=torch.long)
-    all_segment_ids = torch.tensor([f.segment_ids for f in features], dtype=torch.long)
-    tensor_data = TensorDataset(all_input_ids, all_input_mask, all_segment_ids,
-                                all_label_ids, all_seq_lengths)
-    return tensor_data, all_label_ids
+        all_labels = torch.tensor([f.label for f in features], dtype=torch.float)
+    else:
+        raise ValueError
+
+    dataset = Dataset(all_input_ids, all_attention_mask, all_token_type_ids, all_seq_lengths, all_labels)
+    return dataset, all_labels
 
 
 def result_to_file(result, file_name):
@@ -745,9 +789,12 @@ def do_eval(model, task_name, eval_dataloader,
     all_logits = None
 
     for batch_ in tqdm(eval_dataloader, desc="Evaluating"):
-        batch_ = tuple(t.to(device) for t in batch_)
+        batch_ = {k: v.to(device) for k, v in batch_.items()}
         with torch.no_grad():
-            input_ids, input_mask, segment_ids, label_ids, seq_lengths = batch_
+            input_ids = batch_['input_ids']
+            input_mask = batch_['attention_mask']
+            segment_ids = batch_['token_type_ids']
+            label_ids = batch_['labels']
 
             logits, _, _ = model(input_ids, segment_ids, input_mask)
 
@@ -785,14 +832,16 @@ def do_eval(model, task_name, eval_dataloader,
 
 def do_predict(model, task_name, eval_dataloader,
                device, output_mode, num_labels):
-    eval_loss = 0
     nb_eval_steps = 0
     all_logits = None
 
     for batch_ in tqdm(eval_dataloader, desc="Evaluating"):
-        batch_ = tuple(t.to(device) for t in batch_)
+        batch_ = {k: v.to(device) for k, v in batch_.items()}
         with torch.no_grad():
-            input_ids, input_mask, segment_ids, _, seq_lengths = batch_
+            input_ids = batch_['input_ids']
+            input_mask = batch_['attention_mask']
+            segment_ids = batch_['token_type_ids']
+
             logits, _, _ = model(input_ids, segment_ids, input_mask)
 
         nb_eval_steps += 1
@@ -818,12 +867,16 @@ def build_dataloader(dataset_type, args, processor, label_list, tokenizer, outpu
         eval_examples = processor.get_dev_examples(args.data_dir)
     elif dataset_type == 'test':
         eval_examples = processor.get_test_examples(args.data_dir)
+    else:
+        raise ValueError('Not known set type')
 
-    eval_features = convert_examples_to_features(eval_examples, label_list, args.max_seq_length, tokenizer, output_mode,
-                                                 dataset_type)
-    eval_data, eval_labels = get_tensor_data(output_mode, eval_features, dataset_type)
-    eval_sampler = SequentialSampler(eval_data)
-    eval_dataloader = DataLoader(eval_data, sampler=eval_sampler, batch_size=args.eval_batch_size)
+    eval_features = convert_examples_to_features(eval_examples, label_list, args.max_seq_length, tokenizer, output_mode)
+    eval_dataset, eval_labels = get_dataset_and_labels(output_mode, eval_features)
+
+    collator = SmartCollator(tokenizer.pad_token_id)
+    eval_sampler = SequentialSampler(eval_dataset)
+    eval_dataloader = DataLoader(eval_dataset, sampler=eval_sampler, batch_size=args.eval_batch_size,
+                                 collate_fn=collator.collate_batch, pin_memory=True)
     return eval_dataloader, len(eval_examples), eval_labels
 
 
@@ -956,13 +1009,6 @@ def main():
 
     logger.info("device: {} n_gpu: {}".format(device, n_gpu))
 
-    # Prepare seed
-    random.seed(args.seed)
-    np.random.seed(args.seed)
-    torch.manual_seed(args.seed)
-    if n_gpu > 0:
-        torch.cuda.manual_seed_all(args.seed)
-
     task_name = args.task_name.lower()
 
     # Prepare task settings
@@ -1025,7 +1071,6 @@ def main():
         report['eval_time'] = diff_seconds
         dictionary_to_json(report, os.path.join(args.output_dir, "test_results.json"))
 
-
     if args.do_predict:
         if 'multiemo' in task_name:
             _, lang, domain, kind = task_name.split('_')
@@ -1042,7 +1087,6 @@ def main():
                                  device, output_mode, num_labels)
         label_list = processor.get_labels()
         write_predictions(predictions, args, task_name, output_mode, label_list)
-
 
 
 if __name__ == "__main__":

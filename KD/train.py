@@ -18,14 +18,13 @@
 
 from __future__ import absolute_import, division, print_function
 
-import argparse, csv, logging, os, random, sys, json, torch
+import argparse, csv, logging, os, sys, json, torch
 import time
 from datetime import timedelta
-from typing import List
+from typing import List, Optional, Dict
 
 import numpy as np
-from torch.utils.data import (DataLoader, RandomSampler, SequentialSampler,
-                              TensorDataset)
+from torch.utils.data import DataLoader, RandomSampler, SequentialSampler
 from tqdm import tqdm, trange
 
 from torch.nn import CrossEntropyLoss, MSELoss
@@ -37,7 +36,7 @@ from transformer.modeling_prun import TinyBertForSequenceClassification as PrunT
 from transformer.tokenization import BertTokenizer
 from transformer.optimization import BertAdam
 from transformer.file_utils import WEIGHTS_NAME, CONFIG_NAME
-from utils import result_to_text_file, dictionary_to_json
+from utils import result_to_text_file, dictionary_to_json, is_folder_empty
 
 csv.field_size_limit(sys.maxsize)
 
@@ -48,17 +47,6 @@ fh = logging.FileHandler('debug_layer_loss.log')
 fh.setFormatter(logging.Formatter(log_format))
 logging.getLogger().addHandler(fh)
 logger = logging.getLogger()
-
-try:
-    from tensorboardX import SummaryWriter
-
-    _has_tensorboard = True
-except ImportError:
-    _has_tensorboard = False
-
-
-def is_tensorboard_available():
-    return _has_tensorboard
 
 
 class InputExample(object):
@@ -522,35 +510,49 @@ def convert_examples_to_features(examples, label_list, max_seq_length,
         if ex_index % 10000 == 0:
             logger.info("Writing example %d of %d" % (ex_index, len(examples)))
 
-        tokens_a = tokenizer.tokenize(example.text_a)
+        inputs = tokenizer.encode_plus(
+            example.text_a,
+            example.text_b,
+            add_special_tokens=True,
+            max_length=max_seq_length,
+            return_attention_mask=True,
+            return_token_type_ids=True
+        )
 
-        tokens_b = None
-        if example.text_b:
-            tokens_b = tokenizer.tokenize(example.text_b)
-            _truncate_seq_pair(tokens_a, tokens_b, max_seq_length - 3)
-        else:
-            if len(tokens_a) > max_seq_length - 2:
-                tokens_a = tokens_a[:(max_seq_length - 2)]
-
-        tokens = ["[CLS]"] + tokens_a + ["[SEP]"]
-        segment_ids = [0] * len(tokens)
-
-        if tokens_b:
-            tokens += tokens_b + ["[SEP]"]
-            segment_ids += [1] * (len(tokens_b) + 1)
-
-        input_ids = tokenizer.convert_tokens_to_ids(tokens)
-        input_mask = [1] * len(input_ids)
+        input_ids = inputs["input_ids"]
+        segment_ids = inputs["token_type_ids"]
+        input_mask = inputs["attention_mask"]
         seq_length = len(input_ids)
 
-        padding = [0] * (max_seq_length - len(input_ids))
-        input_ids += padding
-        input_mask += padding
-        segment_ids += padding
-
-        assert len(input_ids) == max_seq_length
-        assert len(input_mask) == max_seq_length
-        assert len(segment_ids) == max_seq_length
+        # tokens_a = tokenizer.tokenize(example.text_a)
+        #
+        # tokens_b = None
+        # if example.text_b:
+        #     tokens_b = tokenizer.tokenize(example.text_b)
+        #     _truncate_seq_pair(tokens_a, tokens_b, max_seq_length - 3)
+        # else:
+        #     if len(tokens_a) > max_seq_length - 2:
+        #         tokens_a = tokens_a[:(max_seq_length - 2)]
+        #
+        # tokens = ["[CLS]"] + tokens_a + ["[SEP]"]
+        # segment_ids = [0] * len(tokens)
+        #
+        # if tokens_b:
+        #     tokens += tokens_b + ["[SEP]"]
+        #     segment_ids += [1] * (len(tokens_b) + 1)
+        #
+        # input_ids = tokenizer.convert_tokens_to_ids(tokens)
+        # input_mask = [1] * len(input_ids)
+        # seq_length = len(input_ids)
+        #
+        # padding = [0] * (max_seq_length - len(input_ids))
+        # input_ids += padding
+        # input_mask += padding
+        # segment_ids += padding
+        #
+        # assert len(input_ids) == max_seq_length
+        # assert len(input_mask) == max_seq_length
+        # assert len(segment_ids) == max_seq_length
 
         if output_mode == "classification":
             label_id = label_map[example.label]
@@ -562,22 +564,79 @@ def convert_examples_to_features(examples, label_list, max_seq_length,
         if ex_index < 1:
             logger.info("*** Example ***")
             logger.info("guid: %s" % (example.guid))
-            logger.info("tokens: %s" % " ".join(
-                [str(x) for x in tokens]))
             logger.info("input_ids: %s" % " ".join([str(x) for x in input_ids]))
             logger.info("input_mask: %s" % " ".join([str(x) for x in input_mask]))
-            logger.info(
-                "segment_ids: %s" % " ".join([str(x) for x in segment_ids]))
+            logger.info("segment_ids: %s" % " ".join([str(x) for x in segment_ids]))
             logger.info("label: {}".format(example.label))
             logger.info("label_id: {}".format(label_id))
 
         features.append(
-            InputFeatures(input_ids=input_ids,
-                          input_mask=input_mask,
-                          segment_ids=segment_ids,
-                          label_id=label_id,
-                          seq_length=seq_length))
+            InputFeatures(
+                input_ids=input_ids,
+                input_mask=input_mask,
+                segment_ids=segment_ids,
+                label_id=label_id,
+                seq_length=seq_length
+            )
+        )
     return features
+
+
+class Dataset(torch.utils.data.Dataset):
+    def __init__(self, all_input_ids, all_attention_mask, all_token_type_ids,
+                 all_seq_lengths, labels: Optional[torch.Tensor] = None):
+        self.data = {
+            'input_ids': all_input_ids,
+            'token_type_ids': all_token_type_ids,
+            'attention_mask': all_attention_mask,
+            'seq_lengths': all_seq_lengths
+        }
+        self.n_examples = len(self.data['input_ids'])
+        if labels is not None:
+            self.data.update({'labels': labels})
+
+    def __getitem__(self, idx: int):
+        return {key: self.data[key][idx] for key in self.data.keys()}
+
+    def __len__(self):
+        return self.n_examples
+
+
+class SmartCollator:
+    def __init__(self, pad_token_id: int, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.pad_token_id = pad_token_id
+
+    def collate_batch(self, batch) -> Dict[str, torch.Tensor]:
+        max_size = max([len(example['input_ids']) for example in batch])
+
+        batch_inputs = list()
+        batch_attention_masks = list()
+        batch_token_type_ids = list()
+        labels = list()
+
+        for item in batch:
+            batch_inputs += [pad_seq(item['input_ids'], max_size, self.pad_token_id)]
+            batch_attention_masks += [pad_seq(item['attention_mask'], max_size, 0)]
+            if 'labels' in item.keys():
+                labels.append(item['labels'])
+            if 'token_type_ids' in item.keys():
+                batch_token_type_ids += [pad_seq(item['token_type_ids'], max_size, 0)]
+
+        out_batch = {
+            "input_ids": torch.tensor(batch_inputs, dtype=torch.long),
+            "attention_mask": torch.tensor(batch_attention_masks, dtype=torch.long)
+        }
+        if len(labels) != 0:
+            out_batch.update({'labels': torch.tensor(labels)})
+        if len(batch_token_type_ids) != 0:
+            out_batch.update({'token_type_ids': torch.tensor(batch_token_type_ids, dtype=torch.long)})
+
+        return out_batch
+
+
+def pad_seq(seq: List[int], max_batch_len: int, pad_value: int) -> List[int]:
+    return seq + (max_batch_len - len(seq)) * [pad_value]
 
 
 def _truncate_seq_pair(tokens_a, tokens_b, max_length):
@@ -663,28 +722,20 @@ def compute_metrics(task_name, preds, labels):
         raise KeyError(task_name)
 
 
-def get_tensor_data(output_mode, features):
+def get_dataset_and_labels(output_mode, features):
+    all_input_ids = [f.input_ids for f in features]
+    all_attention_mask = [f.input_mask for f in features]
+    all_token_type_ids = [f.segment_ids for f in features]
+    all_seq_lengths = [f.seq_length for f in features]
     if output_mode == "classification":
-        all_label_ids = torch.tensor([f.label_id for f in features], dtype=torch.long)
+        all_labels = torch.tensor([f.label for f in features], dtype=torch.long)
     elif output_mode == "regression":
-        all_label_ids = torch.tensor([f.label_id for f in features], dtype=torch.float)
+        all_labels = torch.tensor([f.label for f in features], dtype=torch.float)
+    else:
+        raise ValueError
 
-    all_seq_lengths = torch.tensor([f.seq_length for f in features], dtype=torch.long)
-    all_input_ids = torch.tensor([f.input_ids for f in features], dtype=torch.long)
-    all_input_mask = torch.tensor([f.input_mask for f in features], dtype=torch.long)
-    all_segment_ids = torch.tensor([f.segment_ids for f in features], dtype=torch.long)
-    tensor_data = TensorDataset(all_input_ids, all_input_mask, all_segment_ids,
-                                all_label_ids, all_seq_lengths)
-    return tensor_data, all_label_ids
-
-
-def result_to_file(result, file_name):
-    with open(file_name, "a") as writer:
-        logger.info("***** Eval results *****")
-        for key in sorted(result.keys()):
-            logger.info("  %s = %s", key, str(result[key]))
-            writer.write("%s = %s\n" % (key, str(result[key])))
-        writer.write('\n')
+    dataset = Dataset(all_input_ids, all_attention_mask, all_token_type_ids, all_seq_lengths, all_labels)
+    return dataset, all_labels
 
 
 def do_eval(model, task_name, eval_dataloader,
@@ -694,9 +745,13 @@ def do_eval(model, task_name, eval_dataloader,
     all_logits = None
 
     for batch_ in tqdm(eval_dataloader, desc="Evaluating"):
-        batch_ = tuple(t.to(device) for t in batch_)
+        batch_ = {k: v.to(device) for k, v in batch_.items()}
+
         with torch.no_grad():
-            input_ids, input_mask, segment_ids, label_ids, seq_lengths = batch_
+            input_ids = batch_['input_ids']
+            input_mask = batch_['attention_mask']
+            segment_ids = batch_['token_type_ids']
+            label_ids = batch_['labels']
 
             logits, _, _ = model(input_ids, segment_ids, input_mask)
 
@@ -733,7 +788,7 @@ def do_eval(model, task_name, eval_dataloader,
 
 
 def pruning(model, optimizer, model_path, keep_layers, keep_heads, ffn_hidden_dim, emb_hidden_dim,
-            num_labels, prun_step, device, task, schedule, next_lr, next_t_total):
+            num_labels, prun_step, device, task, schedule, next_lr, next_t_total, weight_decay):
     score = optimizer.get_taylor(prun_step)
     score_dict = {}
     modules2prune = []
@@ -768,15 +823,19 @@ def pruning(model, optimizer, model_path, keep_layers, keep_heads, ffn_hidden_di
     param_optimizer = list(model.named_parameters())
     no_decay = ['bias', 'LayerNorm.bias', 'LayerNorm.weight']
     optimizer_grouped_parameters = [
-        {'params': [p for n, p in param_optimizer if not any(nd in n for nd in no_decay)], 'weight_decay': 0.01},
-        {'params': [p for n, p in param_optimizer if any(nd in n for nd in no_decay)], 'weight_decay': 0.0}
+        {'params': [p for n, p in param_optimizer
+                    if not any(nd in n for nd in no_decay)], 'weight_decay': weight_decay},
+        {'params': [p for n, p in param_optimizer
+                    if any(nd in n for nd in no_decay)], 'weight_decay': 0.0}
     ]
-    optimizer = BertAdam(optimizer_grouped_parameters,
-                         schedule=schedule,
-                         lr=next_lr,
-                         warmup=0.,
-                         t_total=next_t_total,
-                         device=device)
+    optimizer = BertAdam(
+        optimizer_grouped_parameters,
+        schedule=schedule,
+        lr=next_lr,
+        warmup=0.,
+        t_total=next_t_total,
+        device=device
+    )
     return model, optimizer
 
 
@@ -795,11 +854,13 @@ def iterative_pruning(args, student_model, teacher_model, optimizer, tokenizer,
     tokenizer.save_vocabulary(args.output_dir)
 
     if args.depth_or_width == 'width':
-        keep_heads, ffn_hidden_dim, emb_hidden_dim = pruning_schedule(prun_times, max_prun_times,
-                                                                      teacher_model.config.num_attention_heads,
-                                                                      teacher_model.config.prun_intermediate_size,
-                                                                      teacher_model.config.hidden_size,
-                                                                      args.ffn_hidden_dim, args.emb_hidden_dim)
+        keep_heads, ffn_hidden_dim, emb_hidden_dim = pruning_schedule(
+            prun_times, max_prun_times,
+            teacher_model.config.num_attention_heads,
+            teacher_model.config.prun_intermediate_size,
+            teacher_model.config.hidden_size,
+            args.ffn_hidden_dim, args.emb_hidden_dim
+        )
         keep_layers = student_model.config.num_hidden_layers
     elif args.depth_or_width == 'depth':
         keep_heads, ffn_hidden_dim, emb_hidden_dim = args.keep_heads, args.ffn_hidden_dim, args.emb_hidden_dim
@@ -813,7 +874,8 @@ def iterative_pruning(args, student_model, teacher_model, optimizer, tokenizer,
 
     student_model, optimizer = pruning(student_model, optimizer, args.output_dir,
                                        keep_layers, keep_heads, ffn_hidden_dim, emb_hidden_dim, num_labels,
-                                       prun_step, device, args.task_name, args.lr_schedule, next_lr, next_t_total)
+                                       prun_step, device, args.task_name, args.lr_schedule, next_lr, next_t_total,
+                                       args.weight_decay)
     return student_model, optimizer
 
 
@@ -851,11 +913,14 @@ def build_dataloader(set_type, args, processor, label_list, tokenizer, output_mo
         raise ValueError('Not known set type')
 
     features = convert_examples_to_features(examples, label_list, args.max_seq_length, tokenizer, output_mode)
-    data, labels = get_tensor_data(output_mode, features)
-    sampler = SequentialSampler(data) if set_type in ['eval', 'test'] else RandomSampler(data)
+    dataset, labels = get_dataset_and_labels(output_mode, features)
+
+    collator = SmartCollator(tokenizer.pad_token_id)
+    sampler = SequentialSampler(dataset) if set_type in ['eval', 'test'] else RandomSampler(dataset)
     batch_size = args.eval_batch_size if set_type in ['eval', 'test'] else args.train_batch_size
-    dataloader = DataLoader(data, sampler=sampler, batch_size=batch_size)
-    return dataloader, labels, data
+    dataloader = DataLoader(dataset, sampler=sampler, batch_size=batch_size, collate_fn=collator.collate_batch,
+                            pin_memory=True)
+    return dataloader, labels, dataset
 
 
 def main():
@@ -934,7 +999,7 @@ def main():
                         type=float,
                         help="Total number of training epochs to perform.")
     parser.add_argument("--warmup_proportion",
-                        default=0.1,
+                        default=0.0,
                         type=float,
                         help="Proportion of training to perform linear learning rate warmup for. "
                              "E.g., 0.1 = 10%% of training.")
@@ -975,7 +1040,7 @@ def main():
                         action='store_true')
     parser.add_argument('--eval_step',
                         type=int,
-                        default=50)
+                        default=500)
     parser.add_argument('--pred_distill',
                         action='store_true')
     parser.add_argument('--repr_distill',
@@ -1043,10 +1108,6 @@ def main():
 
     logger.info("device: {} n_gpu: {}".format(device, n_gpu))
 
-    # Prepare seed
-    random.seed(args.seed)
-    np.random.seed(args.seed)
-    torch.manual_seed(args.seed)
     if n_gpu > 0:
         torch.cuda.manual_seed_all(args.seed)
 
@@ -1063,13 +1124,6 @@ def main():
 
         for key in config[config_task_key]:
             vars(args)[key] = config[config_task_key][key]
-
-    # prepare dirs for multiemo
-    if 'multiemo' in task_name:
-        args.output_dir = os.path.join(args.output_dir, task_name)
-        args.teacher_model = os.path.join(args.teacher_model, task_name)
-        if 'bert_pt' not in args.student_model:
-            args.student_model = os.path.join(args.student_model, task_name)
 
     # Prepare task settings
     if os.path.exists(args.output_dir) and os.listdir(args.output_dir):
@@ -1156,6 +1210,7 @@ def main():
 
         logger.info("***** Running training *****")
         logger.info("  Num examples = %d", len(train_data))
+        logger.info("  Num Epochs = %d", args.num_train_epochs)
         logger.info("  Batch size = %d", args.train_batch_size)
         logger.info("  Num steps = %d", num_train_optimization_steps)
 
@@ -1173,15 +1228,19 @@ def main():
         logger.info('Total parameters: {}'.format(size))
         no_decay = ['bias', 'LayerNorm.bias', 'LayerNorm.weight']
         optimizer_grouped_parameters = [
-            {'params': [p for n, p in param_optimizer if not any(nd in n for nd in no_decay)], 'weight_decay': 0.01},
-            {'params': [p for n, p in param_optimizer if any(nd in n for nd in no_decay)], 'weight_decay': 0.0}
+            {'params': [p for n, p in param_optimizer if
+                        not any(nd in n for nd in no_decay)], 'weight_decay': args.weight_decay},
+            {'params': [p for n, p in param_optimizer
+                        if any(nd in n for nd in no_decay)], 'weight_decay': 0.0}
         ]
-        optimizer = BertAdam(optimizer_grouped_parameters,
-                             schedule=args.lr_schedule,
-                             lr=args.learning_rate,
-                             warmup=args.warmup_proportion,
-                             t_total=num_train_optimization_steps,
-                             device=device)
+        optimizer = BertAdam(
+            optimizer_grouped_parameters,
+            schedule=args.lr_schedule,
+            lr=args.learning_rate,
+            warmup=args.warmup_proportion,
+            t_total=num_train_optimization_steps,
+            device=device
+        )
         # Prepare loss functions
         loss_mse = MSELoss()
 
@@ -1196,9 +1255,11 @@ def main():
         output_eval_file = os.path.join(args.output_dir, "eval_results.txt")
 
         if 'depth_or_width' in args:
-            max_prun_times, prun_times, prun_freq, prun_step = init_prun(args, teacher_model.config.num_hidden_layers,
-                                                                         teacher_model.config.num_attention_heads,
-                                                                         len(train_data))
+            max_prun_times, prun_times, prun_freq, prun_step = init_prun(
+                args, teacher_model.config.num_hidden_layers,
+                teacher_model.config.num_attention_heads,
+                len(train_data)
+            )
             best_acc_step = max_prun_times * prun_step
         else:
             prun_times, max_prun_times, prun_step = -1, -1, -1
@@ -1213,9 +1274,13 @@ def main():
             nb_tr_examples, nb_tr_steps = 0, 0
 
             for step, batch in enumerate(tqdm(train_dataloader, desc=f"Epoch {epoch_ + 1}: ", ascii=True)):
-                batch = tuple(t.to(device) for t in batch)
+                batch = {k: v.to(device) for k, v in batch.items()}
 
-                input_ids, input_mask, segment_ids, label_ids, seq_lengths = batch
+                input_ids = batch['input_ids']
+                input_mask = batch['attention_mask']
+                segment_ids = batch['token_type_ids']
+                label_ids = batch['labels']
+
                 if input_ids.size()[0] != args.train_batch_size:
                     continue
                 if (args.patience is not None) and (
@@ -1225,11 +1290,14 @@ def main():
                 if (global_step + 1) % prun_step == 0 and prun_times < max_prun_times and 'depth_or_width' in args:
                     prun_times += 1
                     logger.info("Pruning after %.2f epoches" % (prun_times * prun_freq))
-                    student_model, optimizer = iterative_pruning(args, student_model, teacher_model, optimizer,
-                                                                 tokenizer,
-                                                                 num_train_optimization_steps, prun_step,
-                                                                 max_prun_times,
-                                                                 prun_times, num_labels, device)
+                    student_model, optimizer = iterative_pruning(
+                        args, student_model, teacher_model, optimizer,
+                        tokenizer,
+                        num_train_optimization_steps, prun_step,
+                        max_prun_times,
+                        prun_times, num_labels, device
+                    )
+
                 rep_loss = 0.
                 cls_loss = 0.
 
@@ -1321,8 +1389,10 @@ def main():
                 result['loss'] = loss
                 result['lr'] = lr
                 result['optim_step'] = optim_step
+                print(json.dumps(result))
                 result_to_text_file(result, output_eval_file)
 
+                save_model = False
                 if (not args.pred_distill) or (prun_times < max_prun_times):
                     save_model = True
                 elif prun_times >= max_prun_times:
