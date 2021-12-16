@@ -75,11 +75,10 @@ class InputExample(object):
 class InputFeatures(object):
     """A single set of features of data."""
 
-    def __init__(self, input_ids, input_mask, segment_ids, label_id, seq_length=None):
+    def __init__(self, input_ids, input_mask, segment_ids, label_id):
         self.input_ids = input_ids
         self.input_mask = input_mask
         self.segment_ids = segment_ids
-        self.seq_length = seq_length
         self.label_id = label_id
 
 
@@ -600,7 +599,6 @@ def convert_examples_to_features(examples, label_list, max_seq_length,
 
         input_ids = tokenizer.convert_tokens_to_ids(tokens)
         input_mask = [1] * len(input_ids)
-        seq_length = len(input_ids)
 
         if output_mode == "classification":
             label_id = label_map[example.label]
@@ -623,21 +621,18 @@ def convert_examples_to_features(examples, label_list, max_seq_length,
                 input_ids=input_ids,
                 input_mask=input_mask,
                 segment_ids=segment_ids,
-                label_id=label_id,
-                seq_length=seq_length
+                label_id=label_id
             )
         )
     return features
 
 
 class Dataset(torch.utils.data.Dataset):
-    def __init__(self, all_input_ids, all_attention_mask, all_token_type_ids,
-                 all_seq_lengths, labels: Optional[torch.Tensor] = None):
+    def __init__(self, all_input_ids, all_attention_mask, all_token_type_ids, labels: Optional[torch.Tensor] = None):
         self.data = {
             'input_ids': all_input_ids,
             'token_type_ids': all_token_type_ids,
-            'attention_mask': all_attention_mask,
-            'seq_lengths': all_seq_lengths
+            'attention_mask': all_attention_mask
         }
         self.n_examples = len(self.data['input_ids'])
         if labels is not None:
@@ -765,7 +760,6 @@ def get_dataset_and_labels(output_mode, features):
     all_input_ids = [f.input_ids for f in features]
     all_attention_mask = [f.input_mask for f in features]
     all_token_type_ids = [f.segment_ids for f in features]
-    all_seq_lengths = [f.seq_length for f in features]
     if output_mode == "classification":
         all_labels = torch.tensor([f.label for f in features], dtype=torch.long)
     elif output_mode == "regression":
@@ -773,7 +767,7 @@ def get_dataset_and_labels(output_mode, features):
     else:
         raise ValueError
 
-    dataset = Dataset(all_input_ids, all_attention_mask, all_token_type_ids, all_seq_lengths, all_labels)
+    dataset = Dataset(all_input_ids, all_attention_mask, all_token_type_ids, all_labels)
     return dataset, all_labels
 
 
