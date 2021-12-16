@@ -31,8 +31,9 @@ def main():
 
     data = list()
     for subdirectory in models_subdirectories:
-        data_dict = gather_results(subdirectory, task_name)
-        data.append(data_dict)
+        if task_name in subdirectory:
+            data_dict = gather_results(subdirectory, task_name)
+            data.append(data_dict)
 
     df = pd.DataFrame(data)
     cols = df.columns.tolist()
@@ -47,6 +48,11 @@ def get_immediate_subdirectories(a_dir):
 
 
 def gather_results(model_dir: str, task_name: str) -> Dict[str, Any]:
+    _, lang, domain, kind = task_name.split('_')
+    processor = MultiemoProcessor(lang, domain, kind)
+    label_list = processor.get_labels()
+    num_labels = len(label_list)
+
     task_subfolder = os.path.basename(model_dir)
 
     with open(os.path.join(model_dir, 'training_params.json')) as json_file:
@@ -73,11 +79,6 @@ def gather_results(model_dir: str, task_name: str) -> Dict[str, Any]:
 
     if 'multiemo' not in task_name:
         raise ValueError("Task not found: %s" % task_name)
-
-    _, lang, domain, kind = task_name.split('_')
-    processor = MultiemoProcessor(lang, domain, kind)
-    label_list = processor.get_labels()
-    num_labels = len(label_list)
 
     # LOADING THE BEST MODEL
     model = PrunBertForSequenceClassification.from_pretrained(model_dir, num_labels=num_labels)
