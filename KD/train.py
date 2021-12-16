@@ -701,9 +701,9 @@ def get_dataset_and_labels(output_mode, features):
     all_token_type_ids = [f.segment_ids for f in features]
     all_seq_lengths = [f.seq_length for f in features]
     if output_mode == "classification":
-        all_labels = torch.tensor([f.label for f in features], dtype=torch.long)
+        all_labels = torch.tensor([f.label_id for f in features], dtype=torch.long)
     elif output_mode == "regression":
-        all_labels = torch.tensor([f.label for f in features], dtype=torch.float)
+        all_labels = torch.tensor([f.label_id for f in features], dtype=torch.float)
     else:
         raise ValueError
 
@@ -1144,8 +1144,11 @@ def main():
                 train_data = torch.load(os.path.join(args.data_dir, 'train_aug.pt'))
             else:
                 train_data = torch.load(os.path.join(args.data_dir, 'train.pt'))
+
+            collator = SmartCollator(tokenizer.pad_token_id)
             train_sampler = RandomSampler(train_data)
-            train_dataloader = DataLoader(train_data, sampler=train_sampler, batch_size=args.train_batch_size)
+            train_dataloader = DataLoader(train_data, sampler=train_sampler, batch_size=args.train_batch_size,
+                                          collate_fn=collator.collate_batch, pin_memory=True)
         except FileNotFoundError:
             train_dataloader, _, train_data = build_dataloader('train', args, processor, label_list, tokenizer,
                                                                output_mode)
