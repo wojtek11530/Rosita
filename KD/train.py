@@ -1155,10 +1155,13 @@ def main():
             logger.info('Building train data')
             train_dataloader, _, train_data = build_dataloader('train', args, processor, label_list, tokenizer,
                                                                output_mode)
+
             if args.aug_train:
                 torch.save(train_data, os.path.join(args.data_dir, 'train_aug.pt'))
+                print('Saving at ', os.path.join(args.data_dir, 'train_aug.pt'))
             else:
                 torch.save(train_data, os.path.join(args.data_dir, 'train.pt'))
+                print('Saving at ', os.path.join(args.data_dir, 'train.pt'))
 
         num_train_optimization_steps = int(
             len(train_data) / args.train_batch_size / args.gradient_accumulation_steps) * args.num_train_epochs
