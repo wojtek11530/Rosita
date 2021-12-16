@@ -585,18 +585,21 @@ def convert_examples_to_features(examples, label_list, max_seq_length,
         if ex_index % 10000 == 0:
             logger.info("Writing example %d of %d" % (ex_index, len(examples)))
 
-        inputs = tokenizer.encode_plus(
-            example.text_a,
-            example.text_b,
-            add_special_tokens=True,
-            max_length=max_seq_length,
-            return_attention_mask=True,
-            return_token_type_ids=True
-        )
+        tokens_a = tokenizer.tokenize(example.text_a)
+        tokens_b = None
+        if example.text_b:
+            tokens_b = tokenizer.tokenize(example.text_b)
+            _truncate_seq_pair(tokens_a, tokens_b, max_seq_length - 3)
 
-        input_ids = inputs["input_ids"]
-        segment_ids = inputs["token_type_ids"]
-        input_mask = inputs["attention_mask"]
+        tokens = ["[CLS]"] + tokens_a + ["[SEP]"]
+        segment_ids = [0] * len(tokens)
+
+        if tokens_b:
+            tokens += tokens_b + ["[SEP]"]
+            segment_ids += [1] * (len(tokens_b) + 1)
+
+        input_ids = tokenizer.convert_tokens_to_ids(tokens)
+        input_mask = [1] * len(input_ids)
         seq_length = len(input_ids)
 
         if output_mode == "classification":

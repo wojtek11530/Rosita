@@ -11,7 +11,7 @@ from transformer.modeling_prun import TinyBertForSequenceClassification as PrunB
 PROJECT_FOLDER = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DATA_FOLDER = os.path.join(PROJECT_FOLDER, 'data')
 MODELS_FOLDER = os.path.join(PROJECT_FOLDER, 'models')
-FT_MODELS_FOLDER = os.path.join(MODELS_FOLDER, 'setting4')
+FT_MODELS_FOLDER = os.path.join(MODELS_FOLDER, 'rosita-setting4')
 
 
 def main():
