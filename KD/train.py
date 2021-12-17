@@ -514,6 +514,9 @@ def convert_examples_to_features(examples, label_list, max_seq_length,
         if example.text_b:
             tokens_b = tokenizer.tokenize(example.text_b)
             _truncate_seq_pair(tokens_a, tokens_b, max_seq_length - 3)
+        else:
+            if len(tokens_a) > max_seq_length - 2:
+                tokens_a = tokens_a[:(max_seq_length - 2)]
 
         tokens = ["[CLS]"] + tokens_a + ["[SEP]"]
         segment_ids = [0] * len(tokens)
@@ -691,15 +694,16 @@ def compute_metrics(task_name, preds, labels):
 
 
 def get_dataset_and_labels(output_mode, features):
-    all_input_ids = [f.input_ids for f in features]
-    all_attention_mask = [f.input_mask for f in features]
-    all_token_type_ids = [f.segment_ids for f in features]
     if output_mode == "classification":
         all_labels = torch.tensor([f.label_id for f in features], dtype=torch.long)
     elif output_mode == "regression":
         all_labels = torch.tensor([f.label_id for f in features], dtype=torch.float)
     else:
         raise ValueError
+
+    all_input_ids = [f.input_ids for f in features]
+    all_attention_mask = [f.input_mask for f in features]
+    all_token_type_ids = [f.segment_ids for f in features]
 
     dataset = Dataset(all_input_ids, all_attention_mask, all_token_type_ids, all_labels)
     return dataset, all_labels
