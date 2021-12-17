@@ -1136,7 +1136,7 @@ def main():
                 args.gradient_accumulation_steps))
         args.train_batch_size = args.train_batch_size // args.gradient_accumulation_steps
 
-        logger.info(f'Loading train datam, bs={args.train_batch_size}')
+        logger.info(f'Loading train data, bs={args.train_batch_size}')
         try:
             logger.info('Try load from drive')
             if args.aug_train:
@@ -1201,7 +1201,6 @@ def main():
         param_optimizer = list(student_model.named_parameters())
         size = 0
         for n, p in student_model.named_parameters():
-            logger.info('n: {}'.format(n))
             size += p.nelement()
 
         logger.info('Total parameters: {}'.format(size))

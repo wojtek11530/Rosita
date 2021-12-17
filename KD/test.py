@@ -630,6 +630,18 @@ def convert_examples_to_features(examples, label_list, max_seq_length,
     return features
 
 
+def _truncate_seq_pair(tokens_a, tokens_b, max_length):
+    """Truncates a sequence pair in place to the maximum length."""
+    while True:
+        total_length = len(tokens_a) + len(tokens_b)
+        if total_length <= max_length:
+            break
+        if len(tokens_a) > len(tokens_b):
+            tokens_a.pop()
+        else:
+            tokens_b.pop()
+
+
 class Dataset(torch.utils.data.Dataset):
     def __init__(self, all_input_ids, all_attention_mask, all_token_type_ids, labels: Optional[torch.Tensor] = None):
         self.data = {
@@ -683,18 +695,6 @@ class SmartCollator:
 
 def pad_seq(seq: List[int], max_batch_len: int, pad_value: int) -> List[int]:
     return seq + (max_batch_len - len(seq)) * [pad_value]
-
-
-def _truncate_seq_pair(tokens_a, tokens_b, max_length):
-    """Truncates a sequence pair in place to the maximum length."""
-    while True:
-        total_length = len(tokens_a) + len(tokens_b)
-        if total_length <= max_length:
-            break
-        if len(tokens_a) > len(tokens_b):
-            tokens_a.pop()
-        else:
-            tokens_b.pop()
 
 
 def simple_accuracy(preds, labels):
@@ -760,15 +760,16 @@ def compute_metrics(task_name, preds, labels):
 
 
 def get_dataset_and_labels(output_mode, features):
+    if output_mode == "classification":
+        all_labels = torch.tensor([f.label_id for f in features], dtype=torch.long)
+    elif output_mode == "regression":
+        all_labels = torch.tensor([f.label_id for f in features], dtype=torch.float)
+    else:
+        raise ValueError
+
     all_input_ids = [f.input_ids for f in features]
     all_attention_mask = [f.input_mask for f in features]
     all_token_type_ids = [f.segment_ids for f in features]
-    if output_mode == "classification":
-        all_labels = torch.tensor([f.label for f in features], dtype=torch.long)
-    elif output_mode == "regression":
-        all_labels = torch.tensor([f.label for f in features], dtype=torch.float)
-    else:
-        raise ValueError
 
     dataset = Dataset(all_input_ids, all_attention_mask, all_token_type_ids, all_labels)
     return dataset, all_labels
