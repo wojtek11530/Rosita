@@ -890,7 +890,7 @@ def build_dataloader(set_type, args, processor, label_list, tokenizer, output_mo
     sampler = SequentialSampler(dataset) if set_type in ['eval', 'test'] else RandomSampler(dataset)
     batch_size = args.eval_batch_size if set_type in ['eval', 'test'] else args.train_batch_size
     dataloader = DataLoader(dataset, sampler=sampler, batch_size=batch_size, collate_fn=collator.collate_batch,
-                            pin_memory=False)
+                            pin_memory=True)
     return dataloader, labels, dataset
 
 
@@ -1024,7 +1024,6 @@ def main():
                         default=1.)
 
     args = parser.parse_args()
-    logger.info('The args: {}'.format(args))
 
     processors = {
         "cola": ColaProcessor,
@@ -1108,6 +1107,8 @@ def main():
         args.max_seq_length = default_params['multiemo']["max_seq_length"]
         args.train_batch_size = default_params['multiemo']["train_batch_size"]
 
+    logger.info('The args: {}'.format(args))
+
     fw_args = open(args.output_dir + '/args.txt', 'w')
     fw_args.write(str(args))
     fw_args.close()
@@ -1147,7 +1148,7 @@ def main():
             collator = SmartCollator(0)
             train_sampler = RandomSampler(train_data)
             train_dataloader = DataLoader(train_data, sampler=train_sampler, batch_size=args.train_batch_size,
-                                          collate_fn=collator.collate_batch)
+                                          collate_fn=collator.collate_batch, pin_memory=True)
         except FileNotFoundError:
             logger.info('Building train data')
             train_dataloader, _, train_data = build_dataloader('train', args, processor, label_list, tokenizer,
