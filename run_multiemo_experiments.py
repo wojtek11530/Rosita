@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 
 data_dir = os.path.join(DATA_FOLDER, 'multiemo2')
 
-REP_NUM = 1
+REP_NUM = 4
 
 batch_size = 16
 num_train_epochs = 3
@@ -111,8 +111,10 @@ def main():
             '--data_dir', '../data/multiemo2',
             '--student_model', rosita_output_dir,
             '--output_dir', rosita_output_dir,
+            '--eval_batch_size', str(batch_size),
             '--do_eval',
-            '--do_predict'
+            '--do_predict',
+            '--do_lower_case'
         ]
         cmd += ' '.join(options)
         logger.info(f"Evaluating RoSITA for {task_name}")

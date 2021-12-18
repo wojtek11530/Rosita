@@ -938,7 +938,7 @@ def main():
                         action='store_true',
                         help="Set this flag if you are using an uncased model.")
     parser.add_argument("--eval_batch_size",
-                        default=32,
+                        default=16,
                         type=int,
                         help="Total batch size for eval.")
     parser.add_argument("--no_cuda",
