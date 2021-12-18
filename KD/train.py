@@ -1337,7 +1337,7 @@ def main():
 
             if not args.compute_taylor:
                 logger.info("***** Running evaluation *****")
-                logger.info("  Epoch = {} iter {} step".format(epoch_, global_step))
+                logger.info("  Epoch = {} iter {} step".format(epoch_ + 1, global_step))
                 logger.info("  Num examples = %d", len(eval_data))
                 logger.info("  Batch size = %d", args.eval_batch_size)
 
