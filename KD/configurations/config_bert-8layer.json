@@ -13,7 +13,7 @@
   "depth_or_width": "depth",
   "repr_distill": false,
   "pred_distill": true,
-  "num_train_epochs": 1
+  "num_train_epochs": 4
  },
  "cola": {
   "teacher_model": "../models/bert_student/CoLA",
