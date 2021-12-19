@@ -18,9 +18,11 @@ data_dir = os.path.join(DATA_FOLDER, 'multiemo2')
 REP_NUM = 4
 
 batch_size = 16
-num_train_epochs = 3
+num_train_epochs = 4
 learning_rate = 5e-5
 weight_decay = 0.01
+warmup_steps = 0
+max_seq_length = 128
 
 task_name = 'multiemo_en_all_sentence'
 
@@ -53,6 +55,7 @@ def main():
             '--num_train_epochs', str(num_train_epochs),
             '--weight_decay', str(weight_decay),
             '--train_batch_size', str(batch_size),
+            '--max_seq_length', str(max_seq_length),
             '--do_lower_case'
         ]
         cmd += ' '.join(options)
@@ -71,6 +74,8 @@ def main():
             '--teacher_model', teacher_model_dir,
             '--output_dir', bert_student_output_dir,
             '--task_name', task_name,
+            '--train_batch_size', str(batch_size),
+            '--max_seq_length', str(max_seq_length),
             '--do_lower_case'
         ]
         cmd += ' '.join(options)
@@ -85,6 +90,8 @@ def main():
             '--student_model', bert_student_output_dir,
             '--output_dir', bert_8layer_output_dir,
             '--task_name', task_name,
+            '--train_batch_size', str(batch_size),
+            '--max_seq_length', str(max_seq_length),
             '--do_lower_case'
         ]
         cmd += ' '.join(options)
@@ -99,6 +106,8 @@ def main():
             '--student_model', bert_8layer_output_dir,
             '--output_dir', rosita_output_dir,
             '--task_name', task_name,
+            '--train_batch_size', str(batch_size),
+            '--max_seq_length', str(max_seq_length),
             '--do_lower_case'
         ]
         cmd += ' '.join(options)
@@ -111,9 +120,10 @@ def main():
             '--data_dir', '../data/multiemo2',
             '--student_model', rosita_output_dir,
             '--output_dir', rosita_output_dir,
-            '--eval_batch_size', str(batch_size),
             '--do_eval',
             '--do_predict',
+            '--eval_batch_size', str(batch_size),
+            '--max_seq_length', str(max_seq_length),
             '--do_lower_case'
         ]
         cmd += ' '.join(options)

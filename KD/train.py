@@ -1052,7 +1052,6 @@ def main():
 
     # intermediate distillation default parameters
     default_params = {
-        "multiemo": {"max_seq_length": 128, "train_batch_size": 16},
         "cola": {"max_seq_length": 64, 'train_batch_size': 32},
         "mnli": {"max_seq_length": 128, 'train_batch_size': 64},
         "mrpc": {"max_seq_length": 128, 'train_batch_size': 32},
@@ -1103,9 +1102,6 @@ def main():
     if task_name in default_params:
         args.max_seq_length = default_params[task_name]["max_seq_length"]
         args.train_batch_size = default_params[task_name]["train_batch_size"]
-    elif 'multiemo' in task_name:
-        args.max_seq_length = default_params['multiemo']["max_seq_length"]
-        args.train_batch_size = default_params['multiemo']["train_batch_size"]
 
     logger.info('The args: {}'.format(args))
 
