@@ -1138,8 +1138,8 @@ def main():
                 args.gradient_accumulation_steps))
         args.train_batch_size = args.train_batch_size // args.gradient_accumulation_steps
 
+        train_dump = f'train_{task_name}_{args.max_seq_length}.pt'
         train_aug_dump = f'train_aug_{task_name}_{args.max_seq_length}.pt'
-        train_dump = f'train_aug_{task_name}_{args.max_seq_length}.pt'
 
         logger.info(f'Loading train data, bs={args.train_batch_size}')
         try:
