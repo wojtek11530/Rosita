@@ -554,6 +554,9 @@ def convert_examples_to_features(examples, label_list, max_seq_length,
                 label_id=label_id
             )
         )
+
+        print('Max lnegth: ', max([len(f.input_ids) for f in features]))
+
     return features
 
 
