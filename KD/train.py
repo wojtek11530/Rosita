@@ -584,7 +584,7 @@ class SmartCollator:
     def collate_batch(self, batch) -> Dict[str, torch.Tensor]:
         max_size = max([len(example['input_ids']) for example in batch])
 
-        print('(Collating) Max length in batch: ', max_size)
+        # print('(Collating) Max length in batch: ', max_size)
 
         batch_inputs = list()
         batch_attention_masks = list()
