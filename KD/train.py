@@ -530,6 +530,7 @@ def convert_examples_to_features(examples, label_list, max_seq_length,
 
         if output_mode == "classification":
             label_id = label_map[example.label]
+            label_id = label_map[example.label]
         elif output_mode == "regression":
             label_id = float(example.label)
         else:
@@ -1134,13 +1135,16 @@ def main():
                 args.gradient_accumulation_steps))
         args.train_batch_size = args.train_batch_size // args.gradient_accumulation_steps
 
+        train_aug_dump = f'train_aug_{task_name}_{args.max_seq_length}.pt'
+        train_dump = f'train_aug_{task_name}_{args.max_seq_length}.pt'
+
         logger.info(f'Loading train data, bs={args.train_batch_size}')
         try:
             logger.info('Try load from drive')
             if args.aug_train:
-                train_data = torch.load(os.path.join(args.data_dir, 'train_aug.pt'))
+                train_data = torch.load(os.path.join(args.data_dir, train_aug_dump))
             else:
-                train_data = torch.load(os.path.join(args.data_dir, 'train.pt'))
+                train_data = torch.load(os.path.join(args.data_dir, train_dump))
 
             collator = SmartCollator(0)
             train_sampler = RandomSampler(train_data)
@@ -1152,11 +1156,11 @@ def main():
                                                                output_mode)
 
             if args.aug_train:
-                torch.save(train_data, os.path.join(args.data_dir, 'train_aug.pt'))
-                print('Saving at ', os.path.join(args.data_dir, 'train_aug.pt'))
+                torch.save(train_data, os.path.join(args.data_dir, train_aug_dump))
+                print('Saving at ', os.path.join(args.data_dir, train_aug_dump))
             else:
-                torch.save(train_data, os.path.join(args.data_dir, 'train.pt'))
-                print('Saving at ', os.path.join(args.data_dir, 'train.pt'))
+                torch.save(train_data, os.path.join(args.data_dir, train_dump))
+                print('Saving at ', os.path.join(args.data_dir, train_dump))
 
         num_train_optimization_steps = int(
             len(train_data) / args.train_batch_size / args.gradient_accumulation_steps) * args.num_train_epochs
