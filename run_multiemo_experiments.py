@@ -22,7 +22,7 @@ num_train_epochs = 4
 learning_rate = 5e-5
 weight_decay = 0.01
 warmup_steps = 0
-max_seq_length = 512
+max_seq_length = 256
 
 task_name = 'multiemo_en_all_text'
 

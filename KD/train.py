@@ -895,7 +895,7 @@ def build_dataloader(set_type, args, processor, label_list, tokenizer, output_mo
     sampler = SequentialSampler(dataset) if set_type in ['eval', 'test'] else RandomSampler(dataset)
     batch_size = args.eval_batch_size if set_type in ['eval', 'test'] else args.train_batch_size
     dataloader = DataLoader(dataset, sampler=sampler, batch_size=batch_size, collate_fn=collator.collate_batch,
-                            pin_memory=False)
+                            pin_memory=True)
     return dataloader, labels, dataset
 
 
