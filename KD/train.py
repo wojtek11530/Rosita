@@ -555,8 +555,6 @@ def convert_examples_to_features(examples, label_list, max_seq_length,
             )
         )
 
-        print('Max lnegth: ', max([len(f.input_ids) for f in features]))
-
     return features
 
 
@@ -585,6 +583,8 @@ class SmartCollator:
 
     def collate_batch(self, batch) -> Dict[str, torch.Tensor]:
         max_size = max([len(example['input_ids']) for example in batch])
+
+        print('(Collating) Max length in batch: ', max_size)
 
         batch_inputs = list()
         batch_attention_masks = list()
