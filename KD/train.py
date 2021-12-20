@@ -1272,7 +1272,7 @@ def main():
 
                 if (global_step + 1) % prun_step == 0 and prun_times < max_prun_times and 'depth_or_width' in args:
                     prun_times += 1
-                    logger.info("Pruning after %.2f epoches" % (prun_times * prun_freq))
+                    logger.info("Pruning after %.2f of all epoches" % (prun_times * prun_freq))
                     student_model, optimizer = iterative_pruning(
                         args, student_model, teacher_model, optimizer,
                         tokenizer,

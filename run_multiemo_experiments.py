@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 
 data_dir = os.path.join(DATA_FOLDER, 'multiemo2')
 
-REP_NUM = 5
+REP_NUM = 1
 
 batch_size = 8
 num_train_epochs = 4
