@@ -5,7 +5,7 @@
   "learning_rate": 5e-5,
   "warmup_proportion": 0.0,
   "weight_decay": 0.01,
-  "prun_period_proportion": 0.2,
+  "prun_period_proportion": 0.5,
   "keep_heads": 12,
   "keep_layers": 8,
   "emb_hidden_dim": -1,
