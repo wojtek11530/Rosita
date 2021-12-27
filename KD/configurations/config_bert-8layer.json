@@ -2,10 +2,10 @@
   "multiemo": {
   "data_dir": "../data/multiemo2",
   "lr_schedule": "none",
-  "learning_rate": 5e-5,
+  "learning_rate": 2e-5,
   "warmup_proportion": 0.0,
   "weight_decay": 0.01,
-  "prun_period_proportion": 0.8,
+  "prun_period_proportion": 0.2,
   "keep_heads": 12,
   "keep_layers": 8,
   "emb_hidden_dim": -1,
@@ -88,7 +88,7 @@
   "num_train_epochs": 3
  },
  "qqp": {
-  "teacher_model": "../models/bert_student/QQP",
+  "teacher_model": "../models/beBrt_student/QQP",
   "student_model": "../models/bert_student/QQP",
   "data_dir": "../data/QQP",
   "output_dir": "../models/bert-8layer/iter_depth_prun/QQP",
